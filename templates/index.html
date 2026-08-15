@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SoloQ Offliner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/star.png') }}">
+    <link rel="preload" href="{{ url_for('static', filename='css/style.css') }}?v=3.3" as="style">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=3.3">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"></noscript>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-logo">
+                <img src="{{ url_for('static', filename='img/cobra.gif') }}" alt="Logo">
+            </div>
+
+            <div class="header-title">
+                <h1 class="main-title">SoloQ Offliner</h1>
+            </div>
+
+            <div class="header-right">
+                <div class="region-selector">
+                    <label for="region-select" class="region-label">Region:</label>
+                    <select id="region-select" class="region-dropdown">
+                        {% for region in regions %}
+                        <option value="{{ region }}" {% if region == default_region %}selected{% endif %}>
+                            {{ region_names.get(region, region.upper()) }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="cutoffs">
+                    <div class="cutoff-item chall">
+                        <img src="{{ url_for('static', filename='img/ranks/challenger.png') }}" alt="Challenger">
+                        <div class="cutoff-info">
+                            <span class="cutoff-lp" id="challenger-lp">---</span>
+                            <span class="cutoff-label">Challenger</span>
+                        </div>
+                    </div>
+                    <div class="cutoff-item gm">
+                        <img src="{{ url_for('static', filename='img/ranks/grandmaster.png') }}" alt="Grandmaster">
+                        <div class="cutoff-info">
+                            <span class="cutoff-lp" id="grandmaster-lp">---</span>
+                            <span class="cutoff-label">Grandmaster</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="error-banner" class="error-banner" style="display:none;">
+            <span id="error-banner-msg">Error al actualizar los datos.</span>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="text-align:center;">#</th>
+                        <th>Jugador</th>
+                        <th>Rank</th>
+                        <th>LP</th>
+                        <th>W / L</th>
+                        <th>Winrate</th>
+                        <th>Estado</th>
+                        <th>24h</th>
+                        <th>7D</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboard-body">
+                    {% include 'rows.html' %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mobile-list" id="mobile-list">
+            {% for p in players %}
+            {% set pos = loop.index %}
+            {% set total = loop.length %}
+            {% set cls = "top-zone" if pos <= 4 else ("danger-zone" if pos > (total - 4) else "") %}
+            {% set tier = (p.tier ~ " " ~ p.rank)|trim %}
+            {% set g24_text = ("+" if p.lp_gain_24h and p.lp_gain_24h > 0 else "") ~ (p.lp_gain_24h|string ~ " LP" if p.lp_gain_24h is not none else "—") %}
+            {% set g7_text  = ("+" if p.lp_gain_7d  and p.lp_gain_7d  > 0 else "") ~ (p.lp_gain_7d|string  ~ " LP" if p.lp_gain_7d  is not none else "—") %}
+            {% set g24_cls = "positive" if p.lp_gain_24h and p.lp_gain_24h > 0 else ("negative" if p.lp_gain_24h and p.lp_gain_24h < 0 else "") %}
+            {% set g7_cls  = "positive" if p.lp_gain_7d  and p.lp_gain_7d  > 0 else ("negative" if p.lp_gain_7d  and p.lp_gain_7d  < 0 else "") %}
+            {% set wr_fill = "linear-gradient(90deg,#10b981,#34d399)" if p.winrate > 50 else ("linear-gradient(90deg,#ef4444,#f87171)" if p.winrate < 50 else "#475569") %}
+            {% set friendly_region = region_names.get(p.region|lower, p.region|upper) %}
+            {% set is_lazy = pos > 8 %}
+            <details class="mobile-card {{ cls }}" data-puuid="{{ p.puuid }}">
+                <summary class="mc-main">
+                    <span class="m-pos">{{ pos }}</span>
+                    <img class="m-avatar" src="{{ p.icon_url }}" alt="{{ p.person_name }}" loading="{{ 'lazy' if is_lazy else 'eager' }}" decoding="async" {% if not is_lazy %}fetchpriority="{{ 'high' if pos == 1 else 'auto' }}"{% endif %}>
+                    <div class="m-info">
+                        <div class="m-person">{{ p.person_name }}{% if p.hot_streak %} 🔥{% endif %} <span class="region-badge">{{ friendly_region }}</span></div>
+                        <div class="m-name">{{ p.game_name }}<span class="m-tag"> #{{ p.tag_line }}</span></div>
+                    </div>
+                    <div class="m-right">
+                        <div class="m-rank">
+                            <img class="m-rank-icon" src="{{ p.emblem_url }}" alt="{{ p.tier }}" loading="{{ 'lazy' if is_lazy else 'eager' }}" decoding="async">
+                            <span class="m-tier">{{ tier }}</span>
+                        </div>
+                        <span class="m-lp">{{ p.lp }} LP</span>
+                    </div>
+                    <span class="mc-chevron">▾</span>
+                </summary>
+                <div class="mc-detail">
+                    <div class="mc-detail-row">
+                        <span class="mc-detail-label">W / L</span>
+                        <span class="mc-detail-value">
+                            <span style="color:var(--win)">{{ p.wins }}W</span> /
+                            <span style="color:var(--loss)">{{ p.losses }}L</span>
+                        </span>
+                    </div>
+                    <div class="mc-detail-row">
+                        <span class="mc-detail-label">Winrate</span>
+                        <div class="mc-detail-wr">
+                            <div class="mc-wr-bar-bg">
+                                <div class="mc-wr-bar-fill" style="width:{{ p.winrate }}%;background:{{ wr_fill }}"></div>
+                            </div>
+                            <span class="mc-detail-value">{{ p.winrate }}%</span>
+                        </div>
+                    </div>
+                    <div class="mc-detail-row">
+                        <span class="mc-detail-label">Estado</span>
+                        {% if p.game_status.is_playing %}
+                        <span class="m-ingame"><span class="dot"></span> {{ p.game_status.mode }}</span>
+                        {% else %}
+                        <span class="mc-detail-value muted">Offline</span>
+                        {% endif %}
+                    </div>
+                    <div class="mc-detail-row">
+                        <span class="mc-detail-label">24h</span>
+                        <span class="mc-detail-value {{ g24_cls }}">{{ g24_text }}</span>
+                    </div>
+                    <div class="mc-detail-row">
+                        <span class="mc-detail-label">7 días</span>
+                        <span class="mc-detail-value {{ g7_cls }}">{{ g7_text }}</span>
+                    </div>
+                    <a href="{{ p.opgg_url }}" target="_blank" class="mc-opgg-link">↗ Ver en op.gg</a>
+                </div>
+            </details>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script>
+        window.initialRegion  = "{{ default_region }}";
+        window.REGION_NAMES   = {{ region_names | tojson }};
+        window.INTERNAL_TOKEN = "{{ internal_token }}";
+    </script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=3.3" defer></script>
+</body>
+</html>
