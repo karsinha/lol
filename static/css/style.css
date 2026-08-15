@@ -715,6 +715,33 @@ thead th:last-child { border-top-right-radius: var(--radius); }
     transition: color 0.3s, border-color 0.3s;
 }
 
+
+.opgg-cell { text-align: center; }
+
+.opgg-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 5px 11px;
+    border: 1px solid var(--border-hi);
+    border-radius: var(--radius-sm);
+    color: #a78bfa;
+    background: rgba(124,58,237,0.06);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.opgg-btn:hover {
+    background: rgba(124,58,237,0.16);
+    border-color: #a78bfa;
+    color: #c4b5fd;
+    transform: translateY(-1px);
+}
+
 .mobile-list { display: none; }
 
 @media (max-width: 700px) {

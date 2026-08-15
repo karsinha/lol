@@ -36,9 +36,9 @@
                     {{ p.person_name }}
                     {% if p.hot_streak %}<span class="hot-streak" title="Hot streak (+3)">🔥</span>{% endif %}
                 </div>
-                <a href="{{ p.opgg_url }}" target="_blank" class="account-name">
+                <span class="account-name">
                     {{ p.game_name }}<span class="tag-span"> #{{ p.tag_line }}</span>
-                </a>
+                </span>
                 <small class="region-badge">{{ friendly_region }}</small>
             </div>
         </div>
@@ -72,18 +72,22 @@
     </td>
     <td>
         {% if p.game_status.is_playing %}
-        <div class="ingame-status">
-            <span class="dot"></span> {{ p.game_status.mode }}
-            <span class="game-time">({{ p.game_status.time }})</span>
+        <div class="ingame-status" data-game-start="{{ p.game_status.game_start_epoch_ms }}">
+            <span class="dot"></span> <span class="mode-text">{{ p.game_status.mode }}</span>
+            <span class="game-time"></span>
         </div>
         {% else %}
         <span class="offline-text">Offline</span>
         {% endif %}
     </td>
     <td class="lp-gain {{ gain24_cls }}" data-raw="{{ p.lp_gain_24h if p.lp_gain_24h is not none else '' }}">{{ gain24_text }}</td>
+    <td class="opgg-cell">
+    <a href="{{ p.opgg_url }}" target="_blank" class="opgg-btn" aria-label="Ver en op.gg" title="Ver en op.gg">OP.GG ↗</a>
+</td>
+</tr>
 </tr>
 <tr class="expand-row" data-puuid="{{ p.puuid }}" hidden>
-    <td colspan="8">
+    <td colspan="9">
         <div class="expand-panel">
             <div class="expand-tabs">
                 <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>

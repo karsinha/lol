@@ -60,12 +60,14 @@ LEADERBOARD_REFRESH_INTERVAL = 90
 MATCH_HISTORY_CACHE_TIMEOUT = 600
 
 
+
 EXECUTOR = ThreadPoolExecutor(max_workers=10)
 
 RIOT_SEMAPHORE = Semaphore(5)
 
 GAME_STATUS_LOCK = Lock()
 CUTOFF_LOCK = Lock()
+ACCOUNT_LOCK = Lock()
 
 _players_cache_lock = Lock()
 
@@ -79,6 +81,10 @@ _match_history_lock = Lock()
 GAME_STATUS_CACHE = {}
 
 CUTOFF_CACHE = {}
+
+
+ACCOUNT_CACHE = {}
+ACCOUNT_CACHE_TIMEOUT = 24 * 60 * 60  
 
 LEADERBOARD_CACHE = {
     "timestamp": 0,
@@ -197,11 +203,10 @@ OPGG_REGION_SLUGS = {
 }
 
 MATCH_ROUTING = {
-    'na1': 'americas', 'br1': 'americas', 'la1': 'americas',
-    'la2': 'americas', 'oc1': 'americas',
+    'na1': 'americas', 'br1': 'americas', 'la1': 'americas', 'la2': 'americas',
     'euw1': 'europe', 'eun1': 'europe', 'tr1': 'europe', 'ru': 'europe',
     'kr': 'asia', 'jp1': 'asia',
-    'ph2': 'sea', 'sg2': 'sea', 'th2': 'sea', 'tw2': 'sea', 'vn2': 'sea'
+    'oc1': 'sea', 'ph2': 'sea', 'sg2': 'sea', 'th2': 'sea', 'tw2': 'sea', 'vn2': 'sea'
 }
 
 
@@ -465,20 +470,8 @@ def save_lp_snapshot(puuid, sort_value, tier, rank, lp):
         print(f"save_lp_snapshot error: {e}")
 
 
-def get_lp_change(puuid, current_sort_value, current_tier, current_lp, hours=24):
-    """Calcula cuánto LP ganó/perdió el jugador en la ventana de tiempo.
-
-    FIX: antes esto comparaba sort_value (que mezcla tier + división + LP)
-    y lo mostraba directamente como "LP ganado". Si el jugador subía de
-    división o de tier en esa ventana, el número mostrado era un salto de
-    cientos de "LP" que en realidad era el peso de la promoción, no LP real.
-
-    Ahora: si el tier no cambió, comparamos LP puro (correcto). Si el tier
-    SÍ cambió (promoción/descenso de tier), no hay forma limpia de aislar
-    "LP real ganado" de "LP ganado por la promoción", así que devolvemos
-    el delta de sort_value como aproximación, pero al menos ya no confunde
-    el caso común (que es no cambiar de tier) con el infrecuente.
-    """
+def get_lp_change(puuid, current_sort_value, current_tier,current_rank, current_lp, hours=24):
+    
     try:
         with get_db() as conn:
 
@@ -494,7 +487,7 @@ def get_lp_change(puuid, current_sort_value, current_tier, current_lp, hours=24)
             )
 
             cursor.execute("""
-                SELECT sort_value, tier, lp
+                SELECT sort_value, tier, rank, lp
                 FROM lp_history
                 WHERE puuid = ?
                 AND timestamp <= ?
@@ -510,13 +503,11 @@ def get_lp_change(puuid, current_sort_value, current_tier, current_lp, hours=24)
             if not row:
                 return None
 
-            old_sort_value, old_tier, old_lp = row
+            old_sort_value, old_tier, old_rank, old_lp = row
 
-            if old_tier == current_tier:
+            if old_tier == current_tier and old_rank == current_rank:
                 return current_lp - old_lp
 
-            # Cambió de tier en la ventana: el delta de LP puro no tiene
-            # sentido (compararías LP de tiers distintos), usamos sort_value.
             return current_sort_value - old_sort_value
 
     except Exception as e:
@@ -822,6 +813,54 @@ def riot_get(url, headers, timeout=3):
             timeout=timeout
         )
 
+def get_cached_account_info(puuid, region, headers, fallback_name, fallback_tag):
+
+    now = time.time()
+
+    with ACCOUNT_LOCK:
+        if puuid in ACCOUNT_CACHE:
+            cache_entry = ACCOUNT_CACHE[puuid]
+            if (now - cache_entry['timestamp']) < ACCOUNT_CACHE_TIMEOUT:
+                return cache_entry['data']
+
+    continent = MATCH_ROUTING.get(region, 'americas')
+
+    account_info = {
+        "game_name": fallback_name,
+        "tag_line": fallback_tag
+    }
+
+    try:
+        r = riot_get(
+            f"https://{continent}.api.riotgames.com/riot/account/v1/accounts/by-puuid/{puuid}",
+            headers,
+            timeout=3
+        )
+
+        if r.status_code == 200:
+            d = r.json()
+            game_name = d.get('gameName')
+            tag_line = d.get('tagLine')
+
+            if game_name and tag_line:
+                account_info = {
+                    "game_name": game_name,
+                    "tag_line": tag_line
+                }
+        else:
+            print(f"[account] {puuid} -> {r.status_code}")
+
+    except Exception as e:
+        print(f"account fetch error {puuid}: {e}")
+
+    with ACCOUNT_LOCK:
+        ACCOUNT_CACHE[puuid] = {
+            'timestamp': now,
+            'data': account_info
+        }
+
+    return account_info
+
 
 def get_cached_game_status(puuid, region, headers):
 
@@ -857,9 +896,9 @@ def get_cached_game_status(puuid, region, headers):
 
             d = r.json()
 
-            game_length_minutes = int(
-                d.get('gameLength', 0) / 60
-            )
+            game_length_seconds = d.get('gameLength', 0)
+
+            game_start_epoch_ms = int((now - game_length_seconds) * 1000)
 
             game_status = {
                 "is_playing": True,
@@ -867,7 +906,7 @@ def get_cached_game_status(puuid, region, headers):
                     d.get('gameQueueConfigId', 0),
                     "In-Game"
                 ),
-                "time": f"{game_length_minutes} min"
+                "game_start_epoch_ms": game_start_epoch_ms
             }
 
     except Exception:
@@ -880,6 +919,7 @@ def get_cached_game_status(puuid, region, headers):
         }
 
     return game_status
+
 
 
 def fetch_data_from_riot(player_obj):
@@ -904,6 +944,13 @@ def fetch_data_from_riot(player_obj):
             if player_obj.get('custom_image')
             else "/static/img/avatars/default.png"
         )
+
+        account_info = get_cached_account_info(
+            puuid, region, headers, display_name, tag_line
+        )
+        display_name = account_info['game_name']
+        tag_line     = account_info['tag_line']
+
 
         leagues = []
 
@@ -1006,6 +1053,7 @@ def fetch_data_from_riot(player_obj):
                 puuid,
                 current_sort_value,
                 stats['tier'],
+                stats['rank'],
                 stats['lp'],
                 hours=24
             )
@@ -1047,9 +1095,9 @@ def refresh_leaderboard_now():
     # Así /update_data puede devolver "304 no cambió nada" en vez de
     # reenviar el JSON completo cuando no hubo cambios reales.
     fingerprint = json.dumps(
-        [(p['puuid'], p['sort_value'], p['game_status']['is_playing']) for p in leaderboard],
-        sort_keys=True
-    )
+    [(p['puuid'], p['sort_value'], p['game_status']['is_playing']) for p in leaderboard],
+    sort_keys=True
+)
     etag = hashlib.md5(fingerprint.encode()).hexdigest()
 
     with _leaderboard_lock:
@@ -1279,6 +1327,12 @@ def start_cleanup_scheduler():
                 CUTOFF_LOCK
             )
 
+            cleanup_cache(
+                ACCOUNT_CACHE,
+                ACCOUNT_CACHE_TIMEOUT * 5,
+                ACCOUNT_LOCK
+            )
+
             _prune_rate_limit_store()
 
             with _match_history_lock:
@@ -1433,10 +1487,11 @@ def update_data():
                 if p['game_status']['is_playing']
                 else ''
             ),
-            "time": (
-                p['game_status'].get('time', '')
+            "game_start_epoch_ms": (
+                p['game_status'].get('game_start_epoch_ms')
                 if p['game_status']['is_playing']
-                else ''
+                else None
+
             ),
             "lp_gain_24h": p['lp_gain_24h']
             })
@@ -1597,6 +1652,8 @@ start_cleanup_scheduler()
 refresh_leaderboard_now()
 
 start_leaderboard_refresher()
+
+
 
 
 

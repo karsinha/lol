@@ -18,6 +18,32 @@ document.addEventListener("DOMContentLoaded", () => {
     const detailCache = new Map();
     const DETAIL_CACHE_TTL = 5 * 60 * 1000;
 
+    const gameTimerInterval_MS = 15000; // recalcula cada 15s, de sobra para mostrar minutos
+    let gameTimerInterval = null;
+
+    function formatElapsed(ms) {
+        const totalMin = Math.max(0, Math.floor(ms / 60000));
+        return `(${totalMin} min)`;
+    }
+
+    function tickGameTimers() {
+        const now = Date.now();
+        document.querySelectorAll('[data-game-start]').forEach(el => {
+            const start = Number(el.dataset.gameStart);
+            if (!start) return;
+            const timeEl = el.querySelector('.game-time');
+            if (timeEl) timeEl.textContent = formatElapsed(now - start);
+        });
+    }
+
+    function ensureGameTimerLoop() {
+        if (gameTimerInterval) return;
+        tickGameTimers();
+        gameTimerInterval = setInterval(tickGameTimers, gameTimerInterval_MS);
+    }
+
+    ensureGameTimerLoop();
+
     const openDesktop = new Set();
 
     function apiFetch(url, signal) {
@@ -468,8 +494,7 @@ document.addEventListener("DOMContentLoaded", () => {
             losses:      row.querySelector('.l-text')?.textContent?.trim()       || '',
             winrate:     row.querySelector('.wr-bar-fill')?.style.width          || '0%',
             is_playing:  !!row.querySelector('.ingame-status'),
-            mode:        row.querySelector('.ingame-status span:not(.dot)')?.textContent?.trim() || '',
-            time:        row.querySelector('.game-time')?.textContent?.replace(/[()]/g, '').trim() || '',
+            mode:        row.querySelector('.mode-text')?.textContent?.trim() || '',
             hot_streak:  !!row.querySelector('.hot-streak'),
             lp_gain_24h: gains[0]?.dataset.raw ?? '',
         };
@@ -478,7 +503,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function hasChanged(old, neo) {
         if (!old) return true;
         return ['tier', 'rank', 'lp', 'wins', 'losses', 'winrate',
-                'is_playing', 'mode', 'time', 'hot_streak',
+                'is_playing', 'mode',  'hot_streak',
                 'lp_gain_24h']
             .some(k => old[k] !== neo[k]);
     }
@@ -546,7 +571,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const statusTd = row.querySelector('td:nth-child(7)');
         if (statusTd) {
             statusTd.innerHTML = player.is_playing
-                ? `<div class="ingame-status"><span class="dot"></span> ${player.mode} <span class="game-time">(${player.time})</span></div>`
+                ? `<div class="ingame-status" data-game-start="${player.game_start_epoch_ms || ''}"><span class="dot"></span> <span class="mode-text">${player.mode}</span> <span class="game-time"></span></div>`
                 : `<span class="offline-text">Offline</span>`;
         }
 
@@ -583,7 +608,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const friendly   = REGION_NAMES[(player.region || '').toLowerCase()] || player.region;
         const hotHTML    = player.hot_streak ? `<span class="hot-streak" title="Hot streak (+3)">🔥</span>` : '';
         const statusHTML = player.is_playing
-            ? `<div class="ingame-status"><span class="dot"></span> ${player.mode} <span class="game-time">(${player.time})</span></div>`
+            ? `<div class="ingame-status" data-game-start="${player.game_start_epoch_ms || ''}"><span class="dot"></span> <span class="mode-text">${player.mode}</span> <span class="game-time"></span></div>`
             : `<span class="offline-text">Offline</span>`;
 
         return `
@@ -594,17 +619,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 </button>
             </td>
             <td>
-                <div class="player-info">
-                                    <img class="player-avatar" src="${player.icon_url}" alt="${player.person_name}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
-                    <div class="player-names">
-                        <div class="real-name">${player.person_name}${hotHTML}</div>
-                        <a href="${player.opgg_url}" target="_blank" class="account-name">
-                            ${player.game_name}<span class="tag-span"> #${player.tag_line}</span>
-                        </a>
-                        <small class="region-badge">${friendly}</small>
-                    </div>
-                </div>
-            </td>
+    <div class="player-info">
+                    <img class="player-avatar" src="${player.icon_url}" alt="${player.person_name}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
+        <div class="player-names">
+            <div class="real-name">${player.person_name}${hotHTML}</div>
+            <span class="account-name">
+                ${player.game_name}<span class="tag-span"> #${player.tag_line}</span>
+            </span>
+            <small class="region-badge">${friendly}</small>
+        </div>
+    </div>
+</td>
             <td>
                 <div class="rank-wrapper">
                     <img src="${player.emblem_url}" class="rank-icon" alt="${player.tier}" loading="lazy">
@@ -629,13 +654,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 </div>
             </td>
             <td>${statusHTML}</td>
-            <td class="lp-gain ${g24.cls}" data-raw="${player.lp_gain_24h ?? ''}">${g24.text}</td>
+<td class="lp-gain ${g24.cls}" data-raw="${player.lp_gain_24h ?? ''}">${g24.text}</td>
+<td class="opgg-cell">
+    <a href="${player.opgg_url}" target="_blank" class="opgg-btn" aria-label="Ver en op.gg" title="Ver en op.gg">OP.GG ↗</a>
+</td>
         `;
     }
 
     function createExpandRowHTML(puuid) {
         return `
-            <td colspan="8">
+            <td colspan="9">
                 <div class="expand-panel">
                     <div class="expand-tabs">
                         <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
@@ -735,6 +763,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 updateMobileList(players);
                 previousPlayers = newMap;
+                tickGameTimers();
 
                 const now = new Date();
                 showUpdateStatus(`Actualizado ${now.toLocaleTimeString()}`, false, false);
