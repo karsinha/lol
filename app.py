@@ -25,6 +25,7 @@ static_dir   = os.path.join(base_dir, 'static')
 env_path     = os.path.join(base_dir, '.env')
 db_path      = os.path.join(base_dir, 'soloq_history.db')
 json_path    = os.path.join(base_dir, 'players.json')
+leaderboard_cache_path = os.path.join(base_dir, 'leaderboard_cache.json')
 
 load_dotenv(env_path)
 
@@ -1135,6 +1136,30 @@ def attach_game_status(stats):
     return stats
 
 
+def _save_leaderboard_to_disk(leaderboard):
+    """Guarda el último leaderboard publicado en disco, para poder servirlo
+    de entrada la próxima vez que el proceso arranque (ej: tras un restart
+    de PythonAnywhere por inactividad), en vez de mostrar 'Cargando...'
+    otra vez por los ~10-20s que tarda la primera pasada a Riot."""
+    try:
+        tmp_path = leaderboard_cache_path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(leaderboard, f)
+        os.replace(tmp_path, leaderboard_cache_path)
+    except Exception as e:
+        print(f"leaderboard disk cache save error: {e}")
+
+
+def _load_leaderboard_from_disk():
+    try:
+        if not os.path.exists(leaderboard_cache_path):
+            return []
+        with open(leaderboard_cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"leaderboard disk cache load error: {e}")
+        return []
+
 def _publish_leaderboard(leaderboard):
     # FIX (rendimiento): calculamos un etag simple a partir del contenido.
     # Así /update_data puede devolver "304 no cambió nada" en vez de
@@ -1150,6 +1175,7 @@ def _publish_leaderboard(leaderboard):
         LEADERBOARD_CACHE["data"] = leaderboard
         LEADERBOARD_CACHE["etag"] = etag
 
+    _save_leaderboard_to_disk(leaderboard)   
 
 def refresh_leaderboard_now():
     """Refresca todo el leaderboard en DOS pasadas, cada una en tandas
@@ -1725,7 +1751,9 @@ init_db()
 
 start_cleanup_scheduler()
 
-refresh_leaderboard_now()
+
+LEADERBOARD_CACHE["data"] = _load_leaderboard_from_disk()
+
 
 start_leaderboard_refresher()
 

@@ -2,6 +2,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let previousPlayers = new Map();
     let isUpdating      = false;
     let updateInterval  = null;
+    let hasRealData = document.querySelectorAll('#leaderboard-body tr.player-card').length > 0;
 
     const savedRegion = localStorage.getItem('selectedRegion');
     let currentRegion = savedRegion || window.initialRegion || 'euw1';
@@ -726,6 +727,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     return;
                 }
 
+                hasRealData = players.length > 0;   
+
+
                 const tbody  = document.getElementById('leaderboard-body');
                 const newMap = new Map(players.map(p => [p.puuid, p]));
                 const total  = players.length;
@@ -895,20 +899,30 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
-    function scheduleFirstUpdate() {
-        const start = () => {
-            updateLeaderboard();
+    const FAST_POLL_INTERVAL = 3000; // mientras no haya datos reales, pollea cada 3s
+
+function scheduleFirstUpdate() {
+    const runLoop = () => {
+        updateLeaderboard();
+
+        if (hasRealData) {
             updateInterval = setInterval(updateLeaderboard, UPDATE_FREQUENCY);
-        };
-
-
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(start, { timeout: 3000 });
         } else {
-            setTimeout(start, 2000);
+            // Todavía no llegó la primera pasada real del backend
+            // (proceso recién arrancado): reintenta rápido en vez de
+            // esperar los 60s normales, para sacar el "Cargando..." lo
+            // antes posible.
+            setTimeout(runLoop, FAST_POLL_INTERVAL);
         }
-    }
+    };
 
-    scheduleFirstUpdate();
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(runLoop, { timeout: 3000 });
+    } else {
+        setTimeout(runLoop, 2000);
+    }
+}
+
+scheduleFirstUpdate();
 
 });
