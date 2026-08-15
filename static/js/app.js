@@ -8,6 +8,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 112 112'%3E%3Crect width='112' height='112' rx='24' fill='%2313132a'/%3E%3Ccircle cx='56' cy='44' r='20' fill='%23475569'/%3E%3Cpath d='M20 96c4-24 26-36 36-36s32 12 36 36' fill='%23475569'/%3E%3C/svg%3E";
 
+    function escapeHTML(str) {
+    if (str === null || str === undefined) return '';
+    return String(str).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
     const UPDATE_FREQUENCY        = 60000;
     const REQUEST_TIMEOUT         = 10000;
     const CUTOFF_UPDATE_FREQUENCY = 300000;
@@ -603,63 +610,71 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     function createRowHTML(player, pos, total) {
-        const wrClass    = player.winrate > 50 ? 'wr-green' : player.winrate < 50 ? 'wr-red' : 'wr-gray';
-        const g24        = formatGain(player.lp_gain_24h);
-        const friendly   = REGION_NAMES[(player.region || '').toLowerCase()] || player.region;
-        const hotHTML    = player.hot_streak ? `<span class="hot-streak" title="Hot streak (+3)">🔥</span>` : '';
-        const statusHTML = player.is_playing
-            ? `<div class="ingame-status" data-game-start="${player.game_start_epoch_ms || ''}"><span class="dot"></span> <span class="mode-text">${player.mode}</span> <span class="game-time"></span></div>`
-            : `<span class="offline-text">Offline</span>`;
+    const wrClass    = player.winrate > 50 ? 'wr-green' : player.winrate < 50 ? 'wr-red' : 'wr-gray';
+    const g24        = formatGain(player.lp_gain_24h);
+    const friendly   = REGION_NAMES[(player.region || '').toLowerCase()] || player.region;
+    const hotHTML    = player.hot_streak ? `<span class="hot-streak" title="Hot streak (+3)">🔥</span>` : '';
+    const statusHTML = player.is_playing
+        ? `<div class="ingame-status" data-game-start="${player.game_start_epoch_ms || ''}"><span class="dot"></span> <span class="mode-text">${escapeHTML(player.mode)}</span> <span class="game-time"></span></div>`
+        : `<span class="offline-text">Offline</span>`;
 
-        return `
-            <td class="pos-cell">
-                <button type="button" class="expand-toggle" data-puuid="${player.puuid}" aria-label="Ver detalle">
-                    <span class="expand-pos">${pos}</span>
-                    <span class="expand-arrow">▾</span>
-                </button>
-            </td>
-            <td>
-    <div class="player-info">
-                    <img class="player-avatar" src="${player.icon_url}" alt="${player.person_name}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
-        <div class="player-names">
-            <div class="real-name">${player.person_name}${hotHTML}</div>
-            <span class="account-name">
-                ${player.game_name}<span class="tag-span"> #${player.tag_line}</span>
-            </span>
-            <small class="region-badge">${friendly}</small>
-        </div>
+    const personName = escapeHTML(player.person_name);
+    const gameName   = escapeHTML(player.game_name);
+    const tagLine    = escapeHTML(player.tag_line);
+    const tier       = escapeHTML(player.tier);
+    const opggUrl    = escapeHTML(player.opgg_url);
+    const iconUrl    = escapeHTML(player.icon_url);
+    const emblemUrl  = escapeHTML(player.emblem_url);
+
+    return `
+        <td class="pos-cell">
+            <button type="button" class="expand-toggle" data-puuid="${player.puuid}" aria-label="Ver detalle">
+                <span class="expand-pos">${pos}</span>
+                <span class="expand-arrow">▾</span>
+            </button>
+        </td>
+        <td>
+<div class="player-info">
+                <img class="player-avatar" src="${iconUrl}" alt="${personName}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
+    <div class="player-names">
+        <div class="real-name">${personName}${hotHTML}</div>
+        <span class="account-name">
+            ${gameName}<span class="tag-span"> #${tagLine}</span>
+        </span>
+        <small class="region-badge">${escapeHTML(friendly)}</small>
     </div>
+</div>
 </td>
-            <td>
-                <div class="rank-wrapper">
-                    <img src="${player.emblem_url}" class="rank-icon" alt="${player.tier}" loading="lazy">
-                    <div>
-                        <span class="tier-name">${player.tier}</span>
-                        <span class="rank-div">${player.rank}</span>
-                    </div>
+        <td>
+            <div class="rank-wrapper">
+                <img src="${emblemUrl}" class="rank-icon" alt="${tier}" loading="lazy">
+                <div>
+                    <span class="tier-name">${tier}</span>
+                    <span class="rank-div">${escapeHTML(player.rank)}</span>
                 </div>
-            </td>
-            <td class="lp-highlight">${player.lp} LP</td>
-            <td class="wl-cell">
-                <span class="w-text">${player.wins}W</span>
-                <span class="sep">/</span>
-                <span class="l-text">${player.losses}L</span>
-            </td>
-            <td>
-                <div class="wr-wrap">
-                    <div class="wr-bar-bg">
-                        <div class="wr-bar-fill ${wrClass}" style="width:${player.winrate}%;"></div>
-                    </div>
-                    <span class="wr-pct">${player.winrate}%</span>
+            </div>
+        </td>
+        <td class="lp-highlight">${player.lp} LP</td>
+        <td class="wl-cell">
+            <span class="w-text">${player.wins}W</span>
+            <span class="sep">/</span>
+            <span class="l-text">${player.losses}L</span>
+        </td>
+        <td>
+            <div class="wr-wrap">
+                <div class="wr-bar-bg">
+                    <div class="wr-bar-fill ${wrClass}" style="width:${player.winrate}%;"></div>
                 </div>
-            </td>
-            <td>${statusHTML}</td>
+                <span class="wr-pct">${player.winrate}%</span>
+            </div>
+        </td>
+        <td>${statusHTML}</td>
 <td class="lp-gain ${g24.cls}" data-raw="${player.lp_gain_24h ?? ''}">${g24.text}</td>
 <td class="opgg-cell">
-    <a href="${player.opgg_url}" target="_blank" class="opgg-btn" aria-label="Ver en op.gg" title="Ver en op.gg">OP.GG ↗</a>
+    <a href="${opggUrl}" target="_blank" class="opgg-btn" aria-label="Ver en op.gg" title="Ver en op.gg">OP.GG ↗</a>
 </td>
-        `;
-    }
+    `;
+}
 
     function createExpandRowHTML(puuid) {
         return `
@@ -791,75 +806,83 @@ document.addEventListener("DOMContentLoaded", () => {
         );
 
         list.innerHTML = players.map((p, i) => {
-            const pos        = i + 1;
-            const cls        = pos <= 4 ? 'top-zone' : pos > total - 4 ? 'danger-zone' : '';
-            const isOpen     = opened.has(p.puuid) ? 'open' : '';
-            const tier       = `${p.tier} ${p.rank}`.trim();
-            const g24        = formatGain(p.lp_gain_24h);
-            const wrFill     = p.winrate > 50
-                ? 'linear-gradient(90deg,#10b981,#34d399)'
-                : p.winrate < 50
-                    ? 'linear-gradient(90deg,#ef4444,#f87171)'
-                    : '#475569';
-            const friendly   = REGION_NAMES[(p.region || '').toLowerCase()] || p.region;
-            const statusHTML = p.is_playing
-                ? `<span class="m-ingame"><span class="dot"></span> ${p.mode}</span>`
-                : `<span class="mc-detail-value muted">Offline</span>`;
+    const pos        = i + 1;
+    const cls        = pos <= 4 ? 'top-zone' : pos > total - 4 ? 'danger-zone' : '';
+    const isOpen     = opened.has(p.puuid) ? 'open' : '';
+    const tier       = escapeHTML(`${p.tier} ${p.rank}`.trim());
+    const g24        = formatGain(p.lp_gain_24h);
+    const wrFill     = p.winrate > 50
+        ? 'linear-gradient(90deg,#10b981,#34d399)'
+        : p.winrate < 50
+            ? 'linear-gradient(90deg,#ef4444,#f87171)'
+            : '#475569';
+    const friendly   = escapeHTML(REGION_NAMES[(p.region || '').toLowerCase()] || p.region);
+    const statusHTML = p.is_playing
+        ? `<span class="m-ingame"><span class="dot"></span> ${escapeHTML(p.mode)}</span>`
+        : `<span class="mc-detail-value muted">Offline</span>`;
 
-            return `
-            <details class="mobile-card ${cls}" data-puuid="${p.puuid}" ${isOpen}>
-                <summary class="mc-main">
-                    <span class="m-pos">${pos}</span>
-                        <img class="m-avatar" src="${p.icon_url}" alt="${p.person_name}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
-                    <div class="m-info">
-                        <div class="m-person">${p.person_name}${p.hot_streak ? ' 🔥' : ''} <span class="region-badge">${friendly}</span></div>
-                        <div class="m-name">${p.game_name}<span class="m-tag"> #${p.tag_line}</span></div>
-                    </div>
-                    <div class="m-right">
-                        <div class="m-rank">
-                            <img class="m-rank-icon" src="${p.emblem_url}" alt="${p.tier}" loading="lazy">
-                            <span class="m-tier">${tier}</span>
-                        </div>
-                        <span class="m-lp">${p.lp} LP</span>
-                    </div>
-                    <span class="mc-chevron">▾</span>
-                </summary>
-                <div class="mc-detail">
-                    <div class="mc-detail-row">
-                        <span class="mc-detail-label">W / L</span>
-                        <span class="mc-detail-value"><span style="color:var(--win)">${p.wins}W</span> / <span style="color:var(--loss)">${p.losses}L</span></span>
-                    </div>
-                    <div class="mc-detail-row">
-                        <span class="mc-detail-label">Winrate</span>
-                        <div class="mc-detail-wr">
-                            <div class="mc-wr-bar-bg"><div class="mc-wr-bar-fill" style="width:${p.winrate}%;background:${wrFill}"></div></div>
-                            <span class="mc-detail-value">${p.winrate}%</span>
-                        </div>
-                    </div>
-                    <div class="mc-detail-row">
-                        <span class="mc-detail-label">Estado</span>
-                        ${statusHTML}
-                    </div>
-                    <div class="mc-detail-row">
-                        <span class="mc-detail-label">24h</span>
-                        <span class="mc-detail-value ${g24.cls}">${g24.text}</span>
-                    </div>
+    const personName = escapeHTML(p.person_name);
+    const gameName   = escapeHTML(p.game_name);
+    const tagLine    = escapeHTML(p.tag_line);
+    const opggUrl    = escapeHTML(p.opgg_url);
+    const iconUrl    = escapeHTML(p.icon_url);
+    const emblemUrl  = escapeHTML(p.emblem_url);
+    const tierRaw    = escapeHTML(p.tier);
 
-                    <div class="expand-tabs">
-                        <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
-                        <button type="button" class="expand-tab" data-tab="history">Historial</button>
-                    </div>
-                    <div class="expand-body" data-tab-content="elo">
-                        <div class="elo-chart-wrap"><div class="expand-loading">Cargando...</div></div>
-                    </div>
-                    <div class="expand-body" data-tab-content="history" hidden>
-                        <div class="match-list"><div class="expand-loading">Cargando...</div></div>
-                    </div>
-
-                    <a href="${p.opgg_url}" target="_blank" class="mc-opgg-link">↗ Ver en op.gg</a>
+    return `
+    <details class="mobile-card ${cls}" data-puuid="${p.puuid}" ${isOpen}>
+        <summary class="mc-main">
+            <span class="m-pos">${pos}</span>
+                <img class="m-avatar" src="${iconUrl}" alt="${personName}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
+            <div class="m-info">
+                <div class="m-person">${personName}${p.hot_streak ? ' 🔥' : ''} <span class="region-badge">${friendly}</span></div>
+                <div class="m-name">${gameName}<span class="m-tag"> #${tagLine}</span></div>
+            </div>
+            <div class="m-right">
+                <div class="m-rank">
+                    <img class="m-rank-icon" src="${emblemUrl}" alt="${tierRaw}" loading="lazy">
+                    <span class="m-tier">${tier}</span>
                 </div>
-            </details>`;
-        }).join('');
+                <span class="m-lp">${p.lp} LP</span>
+            </div>
+            <span class="mc-chevron">▾</span>
+        </summary>
+        <div class="mc-detail">
+            <div class="mc-detail-row">
+                <span class="mc-detail-label">W / L</span>
+                <span class="mc-detail-value"><span style="color:var(--win)">${p.wins}W</span> / <span style="color:var(--loss)">${p.losses}L</span></span>
+            </div>
+            <div class="mc-detail-row">
+                <span class="mc-detail-label">Winrate</span>
+                <div class="mc-detail-wr">
+                    <div class="mc-wr-bar-bg"><div class="mc-wr-bar-fill" style="width:${p.winrate}%;background:${wrFill}"></div></div>
+                    <span class="mc-detail-value">${p.winrate}%</span>
+                </div>
+            </div>
+            <div class="mc-detail-row">
+                <span class="mc-detail-label">Estado</span>
+                ${statusHTML}
+            </div>
+            <div class="mc-detail-row">
+                <span class="mc-detail-label">24h</span>
+                <span class="mc-detail-value ${g24.cls}">${g24.text}</span>
+            </div>
+
+            <div class="expand-tabs">
+                <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
+                <button type="button" class="expand-tab" data-tab="history">Historial</button>
+            </div>
+            <div class="expand-body" data-tab-content="elo">
+                <div class="elo-chart-wrap"><div class="expand-loading">Cargando...</div></div>
+            </div>
+            <div class="expand-body" data-tab-content="history" hidden>
+                <div class="match-list"><div class="expand-loading">Cargando...</div></div>
+            </div>
+
+            <a href="${opggUrl}" target="_blank" class="mc-opgg-link">↗ Ver en op.gg</a>
+        </div>
+    </details>`;
+}).join('');
 
         opened.forEach(puuid => {
             const card = list.querySelector(`.mobile-card[data-puuid="${puuid}"]`);
