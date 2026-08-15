@@ -6,6 +6,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const savedRegion = localStorage.getItem('selectedRegion');
     let currentRegion = savedRegion || window.initialRegion || 'euw1';
 
+    const AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 112 112'%3E%3Crect width='112' height='112' rx='24' fill='%2313132a'/%3E%3Ccircle cx='56' cy='44' r='20' fill='%23475569'/%3E%3Cpath d='M20 96c4-24 26-36 36-36s32 12 36 36' fill='%23475569'/%3E%3C/svg%3E";
+
     const UPDATE_FREQUENCY        = 60000;
     const REQUEST_TIMEOUT         = 10000;
     const CUTOFF_UPDATE_FREQUENCY = 300000;
@@ -183,15 +185,54 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
     }
 
-    let DDRAGON_VERSION = '14.23.1'; // fallback si no llega a resolver el fetch a tiempo
-    fetch('https://ddragon.leagueoflegends.com/api/versions.json')
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then(versions => { if (Array.isArray(versions) && versions[0]) DDRAGON_VERSION = versions[0]; })
-        .catch(() => {});
+    let DDRAGON_VERSION = '14.23.1';
+let RUNE_ICONS = {};
 
-    function champIconUrl(champion) {
-        return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champion}.png`;
-    }
+const SPELL_ICON_MAP = {
+    1: 'SummonerBoost', 3: 'SummonerExhaust', 4: 'SummonerFlash',
+    6: 'SummonerHaste', 7: 'SummonerHeal', 11: 'SummonerSmite',
+    12: 'SummonerTeleport', 13: 'SummonerMana', 14: 'SummonerDot',
+    21: 'SummonerBarrier', 30: 'SummonerPoroRecall', 31: 'SummonerPoroThrow',
+    32: 'SummonerSnowball', 39: 'SummonerSnowURFSnowball_Mark'
+};
+
+function loadRunesData(version) {
+    fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/runesReforged.json`)
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(trees => {
+            trees.forEach(tree => {
+                RUNE_ICONS[tree.id] = tree.icon;
+                tree.slots.forEach(slot => slot.runes.forEach(rune => {
+                    RUNE_ICONS[rune.id] = rune.icon;
+                }));
+            });
+        })
+        .catch(() => {});
+}
+
+fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(versions => { if (Array.isArray(versions) && versions[0]) DDRAGON_VERSION = versions[0]; })
+    .catch(() => {})
+    .finally(() => loadRunesData(DDRAGON_VERSION));
+
+function champIconUrl(champion) {
+    return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champion}.png`;
+}
+
+function spellIconUrl(id) {
+    const key = SPELL_ICON_MAP[id];
+    return key ? `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/spell/${key}.png` : '';
+}
+
+function runeIconUrl(id) {
+    const icon = RUNE_ICONS[id];
+    return icon ? `https://ddragon.leagueoflegends.com/cdn/img/${icon}` : '';
+}
+
+function itemIconUrl(id) {
+    return id ? `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/item/${id}.png` : '';
+}
 
     function timeAgo(epochMs) {
         if (!epochMs) return '';
@@ -203,23 +244,54 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function renderMatchList(container, matches) {
-        if (!container) return;
-        if (!matches || matches.length === 0) {
-            container.innerHTML = '<div class="expand-empty">No se encontraron partidas recientes.</div>';
-            return;
-        }
+    if (!container) return;
+    if (!matches || matches.length === 0) {
+        container.innerHTML = '<div class="expand-empty">No se encontraron partidas recientes.</div>';
+        return;
+    }
 
-        container.innerHTML = matches.map(m => {
-            const kdaRatio = (((m.kills + m.assists) / Math.max(1, m.deaths))).toFixed(1);
-            const hasLp    = m.lp_change !== null && m.lp_change !== undefined;
-            const lpCls    = hasLp ? (m.lp_change > 0 ? 'positive' : m.lp_change < 0 ? 'negative' : '') : '';
-            const lpText   = hasLp ? `${m.lp_change > 0 ? '+' : ''}${m.lp_change} LP` : '—';
+    container.innerHTML = matches.map(m => {
+        const kdaRatio = (((m.kills + m.assists) / Math.max(1, m.deaths))).toFixed(1);
+        const hasLp    = m.lp_change !== null && m.lp_change !== undefined;
+        const lpCls    = hasLp ? (m.lp_change > 0 ? 'positive' : m.lp_change < 0 ? 'negative' : '') : '';
+        const lpText   = hasLp ? `${m.lp_change > 0 ? '+' : ''}${m.lp_change} LP` : '—';
 
-            return `
+        const spell1Url  = spellIconUrl(m.spell1);
+        const spell2Url  = spellIconUrl(m.spell2);
+        const runeUrl    = runeIconUrl(m.rune_primary);
+        const subRuneUrl = runeIconUrl(m.rune_sub);
+
+        const items = Array.isArray(m.items) ? m.items : [];
+        const itemsHTML = Array.from({ length: 7 }).map((_, i) => {
+            const id = items[i];
+            return id
+                ? `<img class="match-item-icon" src="${itemIconUrl(id)}" alt="" loading="lazy">`
+                : `<span class="match-item-icon empty"></span>`;
+        }).join('');
+
+        const queueCls = m.queue_id === 420 ? 'ranked-solo'
+                        : m.queue_id === 440 ? 'ranked-flex'
+                        : m.queue_id === 450 ? 'aram'
+                        : 'other';
+
+        return `
             <div class="match-row ${m.win ? 'win' : 'loss'}">
-                <img class="match-champ-icon" src="${champIconUrl(m.champion)}" alt="${m.champion}" title="${m.champion}" loading="lazy">
+                <div class="match-champ-block">
+                    <img class="match-champ-icon" src="${champIconUrl(m.champion)}" alt="${m.champion}" title="${m.champion}" loading="lazy">
+                    <div class="match-loadout">
+                        <div class="match-spells">
+                            ${spell1Url ? `<img class="match-spell-icon" src="${spell1Url}" alt="" loading="lazy">` : ''}
+                            ${spell2Url ? `<img class="match-spell-icon" src="${spell2Url}" alt="" loading="lazy">` : ''}
+                        </div>
+                        <div class="match-runes">
+                            ${runeUrl ? `<img class="match-rune-icon" src="${runeUrl}" alt="" loading="lazy">` : ''}
+                            ${subRuneUrl ? `<img class="match-rune-icon sub" src="${subRuneUrl}" alt="" loading="lazy">` : ''}
+                        </div>
+                    </div>
+                </div>
                 <div class="match-main">
                     <span class="match-result">${m.win ? 'Victoria' : 'Derrota'}</span>
+                    <span class="match-queue-badge ${queueCls}">${m.queue}</span>
                     <span class="match-time-ago">${timeAgo(m.game_creation)}</span>
                 </div>
                 <div class="match-kda-block">
@@ -230,12 +302,13 @@ document.addEventListener("DOMContentLoaded", () => {
                     <span class="match-kp">${m.kp}% KP</span>
                     <span class="match-cs">${m.cs} CS</span>
                 </div>
+                <div class="match-items">${itemsHTML}</div>
                 <span class="match-duration">${m.duration_min}m</span>
                 <span class="match-lp ${lpCls}">${lpText}</span>
             </div>
         `;
-        }).join('');
-    }
+    }).join('');
+}
 
     function wireTabs(panel) {
         panel.querySelectorAll('.expand-tab').forEach(tabBtn => {
@@ -454,9 +527,7 @@ document.addEventListener("DOMContentLoaded", () => {
             </td>
             <td>
                 <div class="player-info">
-                    <div class="player-img-wrapper">
-                        <img src="${player.icon_url}" alt="${player.person_name}" loading="lazy">
-                    </div>
+                                    <img class="player-avatar" src="${player.icon_url}" alt="${player.person_name}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
                     <div class="player-names">
                         <div class="real-name">${player.person_name}${hotHTML}</div>
                         <a href="${player.opgg_url}" target="_blank" class="account-name">
@@ -635,7 +706,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <details class="mobile-card ${cls}" data-puuid="${p.puuid}" ${isOpen}>
                 <summary class="mc-main">
                     <span class="m-pos">${pos}</span>
-                    <img class="m-avatar" src="${p.icon_url}" alt="${p.person_name}" loading="lazy">
+                        <img class="m-avatar" src="${p.icon_url}" alt="${p.person_name}" loading="lazy" onerror="this.onerror=null;this.src='${AVATAR_PLACEHOLDER}'">
                     <div class="m-info">
                         <div class="m-person">${p.person_name}${p.hot_streak ? ' 🔥' : ''} <span class="region-badge">${friendly}</span></div>
                         <div class="m-name">${p.game_name}<span class="m-tag"> #${p.tag_line}</span></div>

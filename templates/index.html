@@ -92,7 +92,8 @@
             <details class="mobile-card {{ cls }}" data-puuid="{{ p.puuid }}">
                 <summary class="mc-main">
                     <span class="m-pos">{{ pos }}</span>
-                    <img class="m-avatar" src="{{ p.icon_url }}" alt="{{ p.person_name }}" loading="{{ 'lazy' if is_lazy else 'eager' }}" decoding="async" {% if not is_lazy %}fetchpriority="{{ 'high' if pos == 1 else 'auto' }}"{% endif %}>
+                    <img class="m-avatar" src="{{ p.icon_url }}" alt="{{ p.person_name }}" loading="{{ 'lazy' if is_lazy else 'eager' }}" decoding="async" {% if not is_lazy %}fetchpriority="{{ 'high' if pos == 1 else 'auto' }}"{% endif %}
+    onerror='this.onerror=null;this.src="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 112 112%27%3E%3Crect width=%27112%27 height=%27112%27 rx=%2724%27 fill=%27%2313132a%27/%3E%3Ccircle cx=%2756%27 cy=%2744%27 r=%2720%27 fill=%27%23475569%27/%3E%3Cpath d=%27M20 96c4-24 26-36 36-36s32 12 36 36%27 fill=%27%23475569%27/%3E%3C/svg%3E"'>
                     <div class="m-info">
                         <div class="m-person">{{ p.person_name }}{% if p.hot_streak %} 🔥{% endif %} <span class="region-badge">{{ friendly_region }}</span></div>
                         <div class="m-name">{{ p.game_name }}<span class="m-tag"> #{{ p.tag_line }}</span></div>

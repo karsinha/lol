@@ -302,6 +302,8 @@ def init_db():
                 ON match_cache(puuid, game_creation DESC)
             """)
 
+            _ensure_match_cache_columns(conn)
+
     except Exception as e:
         print(f"DB Init Error: {e}")
 
@@ -485,6 +487,46 @@ def get_elo_history(puuid, days=21, max_points=150):
         return []
 
 
+def estimate_match_lp_change(puuid, game_creation_ms, duration_min):
+    """Aproxima el LP ganado/perdido en una partida comparando el snapshot
+    de lp_history más cercano antes del inicio con el más cercano después
+    del final. Es una estimación: si hay partidas muy seguidas y snapshots
+    espaciados, puede incluir LP de más de una partida."""
+    try:
+        start_dt = datetime.datetime.fromtimestamp(game_creation_ms / 1000)
+        end_dt = start_dt + datetime.timedelta(minutes=(duration_min or 0) + 2)
+        window_end = end_dt + datetime.timedelta(hours=3)
+
+        start_str  = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        end_str    = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        window_str = window_end.strftime("%Y-%m-%d %H:%M:%S")
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT sort_value FROM lp_history
+                WHERE puuid = ? AND timestamp <= ?
+                ORDER BY timestamp DESC LIMIT 1
+            """, (puuid, start_str))
+            before = cursor.fetchone()
+
+            cursor.execute("""
+                SELECT sort_value FROM lp_history
+                WHERE puuid = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC LIMIT 1
+            """, (puuid, end_str, window_str))
+            after = cursor.fetchone()
+
+        if before and after:
+            return after[0] - before[0]
+
+        return None
+
+    except Exception as e:
+        print(f"estimate_match_lp_change error: {e}")
+        return None
+
 def fetch_match_history(puuid, region, count=7):
 
     if not API_KEY:
@@ -520,7 +562,9 @@ def fetch_match_history(puuid, region, count=7):
 
             cursor.execute("""
                 SELECT champion, win, kills, deaths, assists, cs,
-                       kill_participation, duration_min, queue_id, game_creation
+                       kill_participation, duration_min, queue_id, game_creation,
+                       item0, item1, item2, item3, item4, item5, item6,
+                       spell1, spell2, perk_primary, perk_sub_style, lp_change
                 FROM match_cache
                 WHERE puuid = ? AND match_id = ?
             """, (puuid, match_id))
@@ -539,7 +583,14 @@ def fetch_match_history(puuid, region, count=7):
                     "kp": cached[6],
                     "duration_min": cached[7],
                     "queue": QUEUE_IDS.get(cached[8], "Otro"),
-                    "game_creation": cached[9]
+                    "queue_id": cached[8],
+                    "game_creation": cached[9],
+                    "items": [cached[10], cached[11], cached[12], cached[13], cached[14], cached[15], cached[16]],
+                    "spell1": cached[17],
+                    "spell2": cached[18],
+                    "rune_primary": cached[19],
+                    "rune_sub": cached[20],
+                    "lp_change": cached[21],
                 })
                 continue
 
@@ -592,14 +643,34 @@ def fetch_match_history(puuid, region, count=7):
                 deaths = me.get('deaths', 0)
                 assists = me.get('assists', 0)
 
+                items = [me.get(f'item{i}', 0) or 0 for i in range(7)]
+                spell1 = me.get('summoner1Id', 0)
+                spell2 = me.get('summoner2Id', 0)
+
+                perk_primary = None
+                perk_sub_style = None
+                styles = me.get('perks', {}).get('styles', [])
+                if styles:
+                    primary_selections = styles[0].get('selections', [])
+                    if primary_selections:
+                        perk_primary = primary_selections[0].get('perk')
+                    if len(styles) > 1:
+                        perk_sub_style = styles[1].get('style')
+
+                lp_change = estimate_match_lp_change(puuid, game_creation, duration_min)
+
                 cursor.execute("""
                     INSERT OR REPLACE INTO match_cache
                     (puuid, match_id, champion, win, kills, deaths, assists,
-                     cs, kill_participation, duration_min, queue_id, game_creation)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     cs, kill_participation, duration_min, queue_id, game_creation,
+                     item0, item1, item2, item3, item4, item5, item6,
+                     spell1, spell2, perk_primary, perk_sub_style, lp_change)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     puuid, match_id, champion, int(win), kills, deaths, assists,
-                    cs, kp, duration_min, queue_id, game_creation
+                    cs, kp, duration_min, queue_id, game_creation,
+                    items[0], items[1], items[2], items[3], items[4], items[5], items[6],
+                    spell1, spell2, perk_primary, perk_sub_style, lp_change
                 ))
 
                 conn.commit()
@@ -615,7 +686,14 @@ def fetch_match_history(puuid, region, count=7):
                     "kp": kp,
                     "duration_min": duration_min,
                     "queue": QUEUE_IDS.get(queue_id, "Otro"),
-                    "game_creation": game_creation
+                    "queue_id": queue_id,
+                    "game_creation": game_creation,
+                    "items": items,
+                    "spell1": spell1,
+                    "spell2": spell2,
+                    "rune_primary": perk_primary,
+                    "rune_sub": perk_sub_style,
+                    "lp_change": lp_change,
                 })
 
             except Exception as e:
@@ -1097,6 +1175,22 @@ def start_leaderboard_refresher():
     thread.start()
 
 
+def _ensure_match_cache_columns(conn):
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(match_cache)").fetchall()}
+
+    new_columns = {
+        "item0": "INTEGER", "item1": "INTEGER", "item2": "INTEGER",
+        "item3": "INTEGER", "item4": "INTEGER", "item5": "INTEGER", "item6": "INTEGER",
+        "spell1": "INTEGER", "spell2": "INTEGER",
+        "perk_primary": "INTEGER", "perk_sub_style": "INTEGER",
+        "lp_change": "INTEGER"
+    }
+
+    for col, col_type in new_columns.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE match_cache ADD COLUMN {col} {col_type}")
+
+
 @app.route('/')
 def home():
 
@@ -1339,6 +1433,7 @@ start_cleanup_scheduler()
 refresh_leaderboard_now()
 
 start_leaderboard_refresher()
+
 
 
 if __name__ == '__main__':
