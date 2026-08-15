@@ -59,6 +59,16 @@ LEADERBOARD_REFRESH_INTERVAL = 90
 
 MATCH_HISTORY_CACHE_TIMEOUT = 600
 
+# FIX (rate limit): antes se disparaban todos los pedidos a Riot de un
+# saque, limitados solo por RIOT_SEMAPHORE (que capea la CONCURRENCIA
+# pero no espacia el RITMO en el tiempo). Con 20 jugadores eso generaba
+# ráfagas de ~40-60 pedidos en 2-3 segundos, pisándole los talones al
+# límite de 20 req/s de Riot. Ahora todo pedido masivo a Riot (leaderboard
+# y detalle de partidas) pasa por _run_in_paced_batches, que manda de a
+# tandas con una pausa entre ellas.
+RIOT_BATCH_SIZE  = 5     # coincide con RIOT_SEMAPHORE, para que cada tanda entre justa
+RIOT_BATCH_DELAY = 1.2   # segundos de pausa entre tandas
+
 
 
 EXECUTOR = ThreadPoolExecutor(max_workers=10)
@@ -318,6 +328,29 @@ def _check_rate_limit():
 
     if _is_rate_limited(ip):
         abort(429)
+
+
+def _run_in_paced_batches(items, fn, batch_size=RIOT_BATCH_SIZE, delay=RIOT_BATCH_DELAY):
+    """Corre fn(item) para cada item, de a tandas en paralelo, con una pausa
+    entre tandas.
+
+    RIOT_SEMAPHORE ya limita cuántos pedidos van EN SIMULTÁNEO, pero eso
+    solo capea la concurrencia -- no evita que, por ejemplo, 20 jugadores
+    disparen ~40 pedidos que terminan de mandarse en 2-3 segundos (ya que
+    el semáforo los deja pasar de a 5 apenas se libera un lugar). Esta
+    función agrega el espaciado en el TIEMPO que faltaba, para no
+    pisarle los talones al rate limit de Riot (20 req/s, 100 req/2min).
+
+    Se usa tanto para el refresh del leaderboard como para el fetch de
+    detalle de partidas cuando alguien abre el panel de un jugador.
+    """
+    results = []
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i + batch_size]
+        results.extend(EXECUTOR.map(fn, batch))
+        if i + batch_size < len(items):
+            time.sleep(delay)
+    return results
 
 
 def init_db():
@@ -600,7 +633,8 @@ def estimate_match_lp_change(puuid, game_creation_ms, duration_min):
 
 def _fetch_single_match_detail(match_id, puuid, continent, headers):
     """Trae y procesa el detalle de UNA partida. Separado en su propia
-    función para poder correrlo en paralelo con el ThreadPoolExecutor."""
+    función para poder correrlo en paralelo (en tandas espaciadas, ver
+    fetch_match_history) con el ThreadPoolExecutor."""
     try:
         mr = riot_get(
             f"https://{continent}.api.riotgames.com/lol/match/v5/matches/{match_id}",
@@ -694,9 +728,10 @@ def _fetch_single_match_detail(match_id, puuid, continent, headers):
 
 def fetch_match_history(puuid, region, count=7):
     """Trae las últimas `count` partidas. Las que ya están en cache local
-    se leen directo de la DB; las que faltan se piden a Riot EN PARALELO
-    (antes era secuencial, una por una, lo que hacía lento abrir el panel
-    la primera vez)."""
+    se leen directo de la DB; las que faltan se piden a Riot en tandas
+    espaciadas (antes se disparaban todas juntas con EXECUTOR.map, lo que
+    sumaba una ráfaga extra de hasta ~7 pedidos por encima de lo que ya
+    esté haciendo el refresh del leaderboard en simultáneo)."""
 
     if not API_KEY:
         return []
@@ -764,13 +799,15 @@ def fetch_match_history(puuid, region, count=7):
                 missing_ids.append(match_id)
 
     if missing_ids:
-        # Pedimos las partidas que faltan todas al mismo tiempo en vez de
-        # una por una. RIOT_SEMAPHORE ya limita cuántas van en simultáneo
-        # contra la API, así que esto es seguro para el rate limit de Riot.
-        fetched = list(EXECUTOR.map(
-            lambda mid: _fetch_single_match_detail(mid, puuid, continent, headers),
-            missing_ids
-        ))
+        # FIX (rate limit): antes esto era EXECUTOR.map directo sobre TODOS
+        # los missing_ids -> podían ser hasta ~7 pedidos disparados juntos,
+        # sumándose a lo que ya esté haciendo el refresh del leaderboard en
+        # paralelo. Ahora usa el mismo pacing que el resto de los pedidos
+        # masivos a Riot (tandas de RIOT_BATCH_SIZE con pausa entre ellas).
+        fetched = _run_in_paced_batches(
+            missing_ids,
+            lambda mid: _fetch_single_match_detail(mid, puuid, continent, headers)
+        )
 
         new_rows = [f for f in fetched if f is not None]
 
@@ -922,7 +959,12 @@ def get_cached_game_status(puuid, region, headers):
 
 
 
-def fetch_data_from_riot(player_obj):
+def fetch_core_stats(player_obj):
+    """PASADA PRIORITARIA del refresh: cuenta + LP/tier/rank/W-L. Esto es
+    lo que arma el leaderboard y el orden -- lo que la gente realmente
+    mira. Deliberadamente NO pide el estado in-game acá: eso es
+    attach_game_status, la pasada secundaria de menor prioridad, que
+    corre después y no bloquea que el leaderboard ya esté publicado."""
 
     display_name = player_obj.get('name', 'Unknown')
     tag_line     = player_obj.get('tag', '')
@@ -994,6 +1036,9 @@ def fetch_data_from_riot(player_obj):
             "winrate": 0,
             "icon_url": final_icon,
             "game_status": {
+                # Se completa después en attach_game_status (pasada
+                # secundaria). Hasta entonces se muestra como offline,
+                # que se corrige solo apenas termina esa segunda pasada.
                 "is_playing": False
             },
             "opgg_url": (
@@ -1060,50 +1105,81 @@ def fetch_data_from_riot(player_obj):
         else:
             stats['lp_gain_24h'] = None
 
-        stats['game_status'] = get_cached_game_status(
-            puuid,
-            region,
-            headers
-        )
-
         return stats
 
     except Exception as e:
-        print(f"fetch_data_from_riot error {display_name}: {e}")
+        print(f"fetch_core_stats error {display_name}: {e}")
         return None
 
 
-def refresh_leaderboard_now():
+def attach_game_status(stats):
+    """PASADA SECUNDARIA del refresh, de menor prioridad: sólo actualiza
+    si el jugador está en partida ahora mismo. Corre después de que el
+    leaderboard con LP/rank ya se publicó -- si tarda unos segundos más
+    en reflejarse, no se nota (a diferencia del elo, que sí importa que
+    esté siempre al día)."""
 
-    players_list = load_players_from_json()
+    if not stats or not API_KEY:
+        return stats
 
-    results = list(
-        EXECUTOR.map(
-            fetch_data_from_riot,
-            players_list
-        )
+    headers = {
+        "X-Riot-Token": API_KEY
+    }
+
+    stats['game_status'] = get_cached_game_status(
+        stats['puuid'],
+        stats['region'].lower(),
+        headers
     )
 
-    leaderboard = [x for x in results if x]
+    return stats
 
-    leaderboard.sort(
-        key=lambda x: x['sort_value'],
-        reverse=True
-    )
 
+def _publish_leaderboard(leaderboard):
     # FIX (rendimiento): calculamos un etag simple a partir del contenido.
     # Así /update_data puede devolver "304 no cambió nada" en vez de
     # reenviar el JSON completo cuando no hubo cambios reales.
     fingerprint = json.dumps(
-    [(p['puuid'], p['sort_value'], p['game_status']['is_playing']) for p in leaderboard],
-    sort_keys=True
-)
+        [(p['puuid'], p['sort_value'], p['game_status']['is_playing']) for p in leaderboard],
+        sort_keys=True
+    )
     etag = hashlib.md5(fingerprint.encode()).hexdigest()
 
     with _leaderboard_lock:
         LEADERBOARD_CACHE["timestamp"] = time.time()
         LEADERBOARD_CACHE["data"] = leaderboard
         LEADERBOARD_CACHE["etag"] = etag
+
+
+def refresh_leaderboard_now():
+    """Refresca todo el leaderboard en DOS pasadas, cada una en tandas
+    espaciadas para no ráfaguear el rate limit de Riot (ver
+    _run_in_paced_batches):
+
+    1) Prioritaria: cuenta + LP/tier/rank/W-L. Arma el orden del
+       leaderboard y se publica apenas termina -- es el dato que
+       realmente importa que esté fresco.
+    2) Secundaria: estado in-game ("jugando ahora"). Corre después,
+       sobre el resultado ya publicado, y lo vuelve a publicar al
+       terminar. Es cosmético, así que puede tardar unos segundos más
+       sin que se note."""
+
+    players_list = load_players_from_json()
+
+    core_results = _run_in_paced_batches(players_list, fetch_core_stats)
+
+    leaderboard = [x for x in core_results if x]
+
+    leaderboard.sort(
+        key=lambda x: x['sort_value'],
+        reverse=True
+    )
+
+    _publish_leaderboard(leaderboard)
+
+    _run_in_paced_batches(leaderboard, attach_game_status)
+
+    _publish_leaderboard(leaderboard)
 
     return leaderboard
 
