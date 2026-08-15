@@ -501,16 +501,16 @@ thead th:last-child { border-top-right-radius: var(--radius); }
     text-transform: uppercase;
     color: var(--text-3);
     background: var(--surface2);
-    border: 1px solid var(--border);
     border-radius: 99px;
     padding: 5px 12px;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    box-shadow: inset 0 0 0 1px var(--border);
+    transition: color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 .expand-tab:hover { color: var(--text-2); }
 .expand-tab.active {
     color: #0d0d17;
     background: linear-gradient(90deg, #a78bfa, #ec4899);
-    border-color: transparent;
+    box-shadow: none;
 }
 
 

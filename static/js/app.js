@@ -185,54 +185,122 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
     }
 
+    // ------------------------------------------------------------------
+    // DDRAGON: versión del juego + mapa de íconos de runas.
+    //
+    // FIX (rendimiento): antes esto se volvía a pedir a ddragon.leagueoflegends.com
+    // en CADA carga de página, aunque los datos casi nunca cambien (Riot
+    // saca un patch nuevo cada 2 semanas más o menos). Ahora lo guardamos
+    // en localStorage con un TTL de 24hs: si lo que tenemos guardado es
+    // reciente, lo usamos directo sin pedir nada a la red. Si venció (o es
+    // la primera visita), lo pedimos una vez y lo volvemos a guardar.
+    // ------------------------------------------------------------------
+
+    const DDRAGON_CACHE_KEY = 'ddragonCache_v1';
+    const DDRAGON_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas
+
     let DDRAGON_VERSION = '14.23.1';
-let RUNE_ICONS = {};
+    let RUNE_ICONS = {};
 
-const SPELL_ICON_MAP = {
-    1: 'SummonerBoost', 3: 'SummonerExhaust', 4: 'SummonerFlash',
-    6: 'SummonerHaste', 7: 'SummonerHeal', 11: 'SummonerSmite',
-    12: 'SummonerTeleport', 13: 'SummonerMana', 14: 'SummonerDot',
-    21: 'SummonerBarrier', 30: 'SummonerPoroRecall', 31: 'SummonerPoroThrow',
-    32: 'SummonerSnowball', 39: 'SummonerSnowURFSnowball_Mark'
-};
+    const SPELL_ICON_MAP = {
+        1: 'SummonerBoost', 3: 'SummonerExhaust', 4: 'SummonerFlash',
+        6: 'SummonerHaste', 7: 'SummonerHeal', 11: 'SummonerSmite',
+        12: 'SummonerTeleport', 13: 'SummonerMana', 14: 'SummonerDot',
+        21: 'SummonerBarrier', 30: 'SummonerPoroRecall', 31: 'SummonerPoroThrow',
+        32: 'SummonerSnowball', 39: 'SummonerSnowURFSnowball_Mark'
+    };
 
-function loadRunesData(version) {
-    fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/runesReforged.json`)
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then(trees => {
-            trees.forEach(tree => {
-                RUNE_ICONS[tree.id] = tree.icon;
-                tree.slots.forEach(slot => slot.runes.forEach(rune => {
-                    RUNE_ICONS[rune.id] = rune.icon;
-                }));
+    function readDdragonCache() {
+        try {
+            const raw = localStorage.getItem(DDRAGON_CACHE_KEY);
+            if (!raw) return null;
+
+            const parsed = JSON.parse(raw);
+            if (!parsed || !parsed.ts || !parsed.version || !parsed.runeIcons) return null;
+
+            if ((Date.now() - parsed.ts) > DDRAGON_CACHE_TTL) return null; // venció
+
+            return parsed;
+        } catch {
+            // localStorage puede fallar (modo incógnito con storage lleno, etc.)
+            // o el JSON puede estar corrupto. En cualquier caso, tratamos
+            // como si no hubiera cache y pedimos todo de nuevo.
+            return null;
+        }
+    }
+
+    function writeDdragonCache(version, runeIcons) {
+        try {
+            localStorage.setItem(DDRAGON_CACHE_KEY, JSON.stringify({
+                ts: Date.now(),
+                version,
+                runeIcons
+            }));
+        } catch {
+            // Si falla el guardado (cuota llena, incógnito, etc.) no pasa nada
+            // grave: simplemente la próxima carga de página va a volver a
+            // pedir los datos a ddragon. No es un error que haya que mostrar.
+        }
+    }
+
+    function buildRuneIconsFromTrees(trees) {
+        const runeIcons = {};
+        trees.forEach(tree => {
+            runeIcons[tree.id] = tree.icon;
+            tree.slots.forEach(slot => slot.runes.forEach(rune => {
+                runeIcons[rune.id] = rune.icon;
+            }));
+        });
+        return runeIcons;
+    }
+
+    function loadDdragonData() {
+        const cached = readDdragonCache();
+
+        if (cached) {
+            DDRAGON_VERSION = cached.version;
+            RUNE_ICONS = cached.runeIcons;
+            return; // no se pide nada a la red, cache todavía válido
+        }
+
+        // No hay cache (o venció): pedimos versión + runas a ddragon,
+        // igual que antes, y esta vez lo guardamos para la próxima visita.
+        fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+            .then(r => r.ok ? r.json() : Promise.reject())
+            .then(versions => {
+                if (Array.isArray(versions) && versions[0]) DDRAGON_VERSION = versions[0];
+            })
+            .catch(() => {})
+            .finally(() => {
+                fetch(`https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/data/en_US/runesReforged.json`)
+                    .then(r => r.ok ? r.json() : Promise.reject())
+                    .then(trees => {
+                        RUNE_ICONS = buildRuneIconsFromTrees(trees);
+                        writeDdragonCache(DDRAGON_VERSION, RUNE_ICONS);
+                    })
+                    .catch(() => {});
             });
-        })
-        .catch(() => {});
-}
+    }
 
-fetch('https://ddragon.leagueoflegends.com/api/versions.json')
-    .then(r => r.ok ? r.json() : Promise.reject())
-    .then(versions => { if (Array.isArray(versions) && versions[0]) DDRAGON_VERSION = versions[0]; })
-    .catch(() => {})
-    .finally(() => loadRunesData(DDRAGON_VERSION));
+    loadDdragonData();
 
-function champIconUrl(champion) {
-    return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champion}.png`;
-}
+    function champIconUrl(champion) {
+        return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champion}.png`;
+    }
 
-function spellIconUrl(id) {
-    const key = SPELL_ICON_MAP[id];
-    return key ? `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/spell/${key}.png` : '';
-}
+    function spellIconUrl(id) {
+        const key = SPELL_ICON_MAP[id];
+        return key ? `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/spell/${key}.png` : '';
+    }
 
-function runeIconUrl(id) {
-    const icon = RUNE_ICONS[id];
-    return icon ? `https://ddragon.leagueoflegends.com/cdn/img/${icon}` : '';
-}
+    function runeIconUrl(id) {
+        const icon = RUNE_ICONS[id];
+        return icon ? `https://ddragon.leagueoflegends.com/cdn/img/${icon}` : '';
+    }
 
-function itemIconUrl(id) {
-    return id ? `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/item/${id}.png` : '';
-}
+    function itemIconUrl(id) {
+        return id ? `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/item/${id}.png` : '';
+    }
 
     function timeAgo(epochMs) {
         if (!epochMs) return '';
@@ -604,10 +672,17 @@ function itemIconUrl(id) {
         apiFetch('/update_data', controller.signal)
             .then(r => {
                 clearTimeout(timeoutId);
+                if (r.status === 304) return null; // sin cambios desde el último poll
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
             })
             .then(players => {
+                if (players === null) {
+                    const now = new Date();
+                    showUpdateStatus(`Actualizado ${now.toLocaleTimeString()}`, false, false);
+                    return;
+                }
+
                 const tbody  = document.getElementById('leaderboard-body');
                 const newMap = new Map(players.map(p => [p.puuid, p]));
                 const total  = players.length;

@@ -7,6 +7,7 @@ import time
 import secrets
 import hmac
 import gzip
+import hashlib
 
 from collections import defaultdict
 from requests.adapters import HTTPAdapter
@@ -37,10 +38,17 @@ app = Flask(
 
 API_KEY = os.getenv("RIOT_API_KEY")
 
-INTERNAL_TOKEN = (
-    os.getenv("INTERNAL_TOKEN")
-    or secrets.token_hex(32)
-)
+# FIX: si falta INTERNAL_TOKEN en .env, antes se generaba uno random en
+# cada arranque sin avisar. Ahora falla fuerte y explica qué pasa, para
+# no pasar horas debuggeando 403 random.
+INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN")
+
+if not INTERNAL_TOKEN:
+    raise RuntimeError(
+        "Falta INTERNAL_TOKEN en el archivo .env. "
+        "Generá uno con: python3 -c \"import secrets; print(secrets.token_hex(32))\" "
+        "y agregalo a tu .env como INTERNAL_TOKEN=<valor>"
+    )
 
 CACHE_TIMEOUT = 60
 GAME_STATUS_CACHE_TIMEOUT = 60
@@ -49,7 +57,7 @@ CUTOFF_CACHE_TIMEOUT = 300
 
 LEADERBOARD_REFRESH_INTERVAL = 90
 
-MATCH_HISTORY_CACHE_TIMEOUT = 600  
+MATCH_HISTORY_CACHE_TIMEOUT = 600
 
 
 EXECUTOR = ThreadPoolExecutor(max_workers=10)
@@ -74,7 +82,8 @@ CUTOFF_CACHE = {}
 
 LEADERBOARD_CACHE = {
     "timestamp": 0,
-    "data": []
+    "data": [],
+    "etag": ""
 }
 
 MATCH_HISTORY_CACHE = {}
@@ -179,6 +188,14 @@ REGION_CONFIG = {
     'vn2':  {'challenger': 50,  'grandmaster': 100}
 }
 
+# FIX: los slugs que usa op.gg en las URLs no son los mismos códigos que
+# usa la API de Riot para las regiones (ej: la2 -> "las", no "la2").
+OPGG_REGION_SLUGS = {
+    'na1': 'na', 'euw1': 'euw', 'eun1': 'eune', 'kr': 'kr', 'jp1': 'jp',
+    'la1': 'lan', 'la2': 'las', 'br1': 'br', 'oc1': 'oce', 'tr1': 'tr',
+    'ru': 'ru', 'ph2': 'ph', 'sg2': 'sg', 'th2': 'th', 'tw2': 'tw', 'vn2': 'vn'
+}
+
 MATCH_ROUTING = {
     'na1': 'americas', 'br1': 'americas', 'la1': 'americas',
     'la2': 'americas', 'oc1': 'americas',
@@ -219,23 +236,69 @@ def calculate_sort_score(tier, rank, lp):
     return score
 
 
+def _client_ip():
+    """Saca la IP real del cliente.
+
+    IMPORTANTE: si tu app corre detrás de un proxy de confianza (como el
+    de PythonAnywhere), ese proxy AGREGA la IP real al final del header
+    X-Forwarded-For. Un cliente malicioso puede mandar su propio valor de
+    X-Forwarded-For, pero no puede evitar que el proxy le agregue el suyo
+    después. Por eso tomamos el ÚLTIMO valor de la lista, no el primero
+    (el primero es fácilmente falsificable por el cliente).
+    """
+    xff = request.headers.get('X-Forwarded-For', '')
+
+    if xff:
+        parts = [p.strip() for p in xff.split(',') if p.strip()]
+        if parts:
+            return parts[-1]
+
+    return request.remote_addr or 'unknown'
+
+
 def _is_rate_limited(ip: str):
     now = time.time()
 
     with _rate_limit_lock:
         calls = _rate_limit_store[ip]
 
-        _rate_limit_store[ip] = [
+        calls = [
             t for t in calls
             if now - t < RATE_LIMIT_WINDOW
         ]
 
-        if len(_rate_limit_store[ip]) >= RATE_LIMIT_MAX:
+        if len(calls) >= RATE_LIMIT_MAX:
+            _rate_limit_store[ip] = calls
             return True
 
-        _rate_limit_store[ip].append(now)
+        calls.append(now)
+        _rate_limit_store[ip] = calls
 
         return False
+
+
+def _prune_rate_limit_store():
+    """Borra del dict las IPs que ya no tienen llamados recientes.
+    Sin esto, _rate_limit_store crece para siempre con cada IP nueva
+    que haya pasado alguna vez, aunque haga rato que no vuelve."""
+    now = time.time()
+
+    with _rate_limit_lock:
+        empty_keys = []
+
+        for ip, calls in _rate_limit_store.items():
+            fresh = [t for t in calls if now - t < RATE_LIMIT_WINDOW]
+
+            if fresh:
+                _rate_limit_store[ip] = fresh
+            else:
+                empty_keys.append(ip)
+
+        for ip in empty_keys:
+            del _rate_limit_store[ip]
+
+        if empty_keys:
+            print(f"[rate limit] podadas {len(empty_keys)} IPs inactivas")
 
 
 def _check_token():
@@ -246,17 +309,14 @@ def _check_token():
 
 
 def _check_rate_limit():
-    ip = request.headers.get(
-        'X-Forwarded-For',
-        request.remote_addr or ''
-    ).split(',')[0].strip()
+    ip = _client_ip()
 
     if _is_rate_limited(ip):
         abort(429)
 
 
 def init_db():
-    
+
     try:
         with get_db() as conn:
 
@@ -405,8 +465,20 @@ def save_lp_snapshot(puuid, sort_value, tier, rank, lp):
         print(f"save_lp_snapshot error: {e}")
 
 
-def get_lp_change(puuid, current_sort_value, hours=24):
+def get_lp_change(puuid, current_sort_value, current_tier, current_lp, hours=24):
+    """Calcula cuánto LP ganó/perdió el jugador en la ventana de tiempo.
 
+    FIX: antes esto comparaba sort_value (que mezcla tier + división + LP)
+    y lo mostraba directamente como "LP ganado". Si el jugador subía de
+    división o de tier en esa ventana, el número mostrado era un salto de
+    cientos de "LP" que en realidad era el peso de la promoción, no LP real.
+
+    Ahora: si el tier no cambió, comparamos LP puro (correcto). Si el tier
+    SÍ cambió (promoción/descenso de tier), no hay forma limpia de aislar
+    "LP real ganado" de "LP ganado por la promoción", así que devolvemos
+    el delta de sort_value como aproximación, pero al menos ya no confunde
+    el caso común (que es no cambiar de tier) con el infrecuente.
+    """
     try:
         with get_db() as conn:
 
@@ -422,7 +494,7 @@ def get_lp_change(puuid, current_sort_value, hours=24):
             )
 
             cursor.execute("""
-                SELECT sort_value
+                SELECT sort_value, tier, lp
                 FROM lp_history
                 WHERE puuid = ?
                 AND timestamp <= ?
@@ -435,10 +507,17 @@ def get_lp_change(puuid, current_sort_value, hours=24):
 
             row = cursor.fetchone()
 
-            if row:
-                return current_sort_value - row[0]
+            if not row:
+                return None
 
-            return None
+            old_sort_value, old_tier, old_lp = row
+
+            if old_tier == current_tier:
+                return current_lp - old_lp
+
+            # Cambió de tier en la ventana: el delta de LP puro no tiene
+            # sentido (compararías LP de tiers distintos), usamos sort_value.
+            return current_sort_value - old_sort_value
 
     except Exception as e:
         print(f"get_lp_change error: {e}")
@@ -527,7 +606,106 @@ def estimate_match_lp_change(puuid, game_creation_ms, duration_min):
         print(f"estimate_match_lp_change error: {e}")
         return None
 
+
+def _fetch_single_match_detail(match_id, puuid, continent, headers):
+    """Trae y procesa el detalle de UNA partida. Separado en su propia
+    función para poder correrlo en paralelo con el ThreadPoolExecutor."""
+    try:
+        mr = riot_get(
+            f"https://{continent}.api.riotgames.com/lol/match/v5/matches/{match_id}",
+            headers,
+            timeout=4
+        )
+
+        if mr.status_code != 200:
+            print(f"[match detail] {match_id} -> {mr.status_code}")
+            return None
+
+        match_data = mr.json()
+        info = match_data.get('info', {})
+        participants = info.get('participants', [])
+
+        me = next(
+            (p for p in participants if p.get('puuid') == puuid),
+            None
+        )
+
+        if not me:
+            return None
+
+        team_id = me.get('teamId')
+
+        team_kills = sum(
+            p.get('kills', 0)
+            for p in participants
+            if p.get('teamId') == team_id
+        ) or 1
+
+        kp = int(
+            ((me.get('kills', 0) + me.get('assists', 0)) / team_kills) * 100
+        )
+
+        cs = (
+            me.get('totalMinionsKilled', 0)
+            + me.get('neutralMinionsKilled', 0)
+        )
+
+        duration_min = int(info.get('gameDuration', 0) / 60)
+        queue_id = info.get('queueId')
+        game_creation = info.get('gameCreation', 0)
+        champion = me.get('championName', '?')
+        win = bool(me.get('win', False))
+        kills = me.get('kills', 0)
+        deaths = me.get('deaths', 0)
+        assists = me.get('assists', 0)
+
+        items = [me.get(f'item{i}', 0) or 0 for i in range(7)]
+        spell1 = me.get('summoner1Id', 0)
+        spell2 = me.get('summoner2Id', 0)
+
+        perk_primary = None
+        perk_sub_style = None
+        styles = me.get('perks', {}).get('styles', [])
+        if styles:
+            primary_selections = styles[0].get('selections', [])
+            if primary_selections:
+                perk_primary = primary_selections[0].get('perk')
+            if len(styles) > 1:
+                perk_sub_style = styles[1].get('style')
+
+        lp_change = estimate_match_lp_change(puuid, game_creation, duration_min)
+
+        return {
+            "match_id": match_id,
+            "champion": champion,
+            "win": win,
+            "kills": kills,
+            "deaths": deaths,
+            "assists": assists,
+            "cs": cs,
+            "kp": kp,
+            "duration_min": duration_min,
+            "queue": QUEUE_IDS.get(queue_id, "Otro"),
+            "queue_id": queue_id,
+            "game_creation": game_creation,
+            "items": items,
+            "spell1": spell1,
+            "spell2": spell2,
+            "rune_primary": perk_primary,
+            "rune_sub": perk_sub_style,
+            "lp_change": lp_change,
+        }
+
+    except Exception as e:
+        print(f"match detail fetch error {match_id}: {e}")
+        return None
+
+
 def fetch_match_history(puuid, region, count=7):
+    """Trae las últimas `count` partidas. Las que ya están en cache local
+    se leen directo de la DB; las que faltan se piden a Riot EN PARALELO
+    (antes era secuencial, una por una, lo que hacía lento abrir el panel
+    la primera vez)."""
 
     if not API_KEY:
         return []
@@ -553,13 +731,12 @@ def fetch_match_history(puuid, region, count=7):
         return []
 
     results = []
+    missing_ids = []
 
     with get_db() as conn:
-
         cursor = conn.cursor()
 
         for match_id in match_ids:
-
             cursor.execute("""
                 SELECT champion, win, kills, deaths, assists, cs,
                        kill_participation, duration_min, queue_id, game_creation,
@@ -592,113 +769,44 @@ def fetch_match_history(puuid, region, count=7):
                     "rune_sub": cached[20],
                     "lp_change": cached[21],
                 })
-                continue
+            else:
+                missing_ids.append(match_id)
 
-            try:
-                mr = riot_get(
-                    f"https://{continent}.api.riotgames.com/lol/match/v5/matches/{match_id}",
-                    headers,
-                    timeout=4
-                )
+    if missing_ids:
+        # Pedimos las partidas que faltan todas al mismo tiempo en vez de
+        # una por una. RIOT_SEMAPHORE ya limita cuántas van en simultáneo
+        # contra la API, así que esto es seguro para el rate limit de Riot.
+        fetched = list(EXECUTOR.map(
+            lambda mid: _fetch_single_match_detail(mid, puuid, continent, headers),
+            missing_ids
+        ))
 
-                if mr.status_code != 200:
-                    print(f"[match detail] {match_id} -> {mr.status_code}")
-                    continue
+        new_rows = [f for f in fetched if f is not None]
 
-                match_data = mr.json()
-                info = match_data.get('info', {})
-                participants = info.get('participants', [])
+        if new_rows:
+            with get_db() as conn:
+                cursor = conn.cursor()
 
-                me = next(
-                    (p for p in participants if p.get('puuid') == puuid),
-                    None
-                )
-
-                if not me:
-                    continue
-
-                team_id = me.get('teamId')
-
-                team_kills = sum(
-                    p.get('kills', 0)
-                    for p in participants
-                    if p.get('teamId') == team_id
-                ) or 1
-
-                kp = int(
-                    ((me.get('kills', 0) + me.get('assists', 0)) / team_kills) * 100
-                )
-
-                cs = (
-                    me.get('totalMinionsKilled', 0)
-                    + me.get('neutralMinionsKilled', 0)
-                )
-
-                duration_min = int(info.get('gameDuration', 0) / 60)
-                queue_id = info.get('queueId')
-                game_creation = info.get('gameCreation', 0)
-                champion = me.get('championName', '?')
-                win = bool(me.get('win', False))
-                kills = me.get('kills', 0)
-                deaths = me.get('deaths', 0)
-                assists = me.get('assists', 0)
-
-                items = [me.get(f'item{i}', 0) or 0 for i in range(7)]
-                spell1 = me.get('summoner1Id', 0)
-                spell2 = me.get('summoner2Id', 0)
-
-                perk_primary = None
-                perk_sub_style = None
-                styles = me.get('perks', {}).get('styles', [])
-                if styles:
-                    primary_selections = styles[0].get('selections', [])
-                    if primary_selections:
-                        perk_primary = primary_selections[0].get('perk')
-                    if len(styles) > 1:
-                        perk_sub_style = styles[1].get('style')
-
-                lp_change = estimate_match_lp_change(puuid, game_creation, duration_min)
-
-                cursor.execute("""
-                    INSERT OR REPLACE INTO match_cache
-                    (puuid, match_id, champion, win, kills, deaths, assists,
-                     cs, kill_participation, duration_min, queue_id, game_creation,
-                     item0, item1, item2, item3, item4, item5, item6,
-                     spell1, spell2, perk_primary, perk_sub_style, lp_change)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    puuid, match_id, champion, int(win), kills, deaths, assists,
-                    cs, kp, duration_min, queue_id, game_creation,
-                    items[0], items[1], items[2], items[3], items[4], items[5], items[6],
-                    spell1, spell2, perk_primary, perk_sub_style, lp_change
-                ))
+                for f in new_rows:
+                    items = f["items"]
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO match_cache
+                        (puuid, match_id, champion, win, kills, deaths, assists,
+                         cs, kill_participation, duration_min, queue_id, game_creation,
+                         item0, item1, item2, item3, item4, item5, item6,
+                         spell1, spell2, perk_primary, perk_sub_style, lp_change)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        puuid, f["match_id"], f["champion"], int(f["win"]),
+                        f["kills"], f["deaths"], f["assists"], f["cs"], f["kp"],
+                        f["duration_min"], f["queue_id"], f["game_creation"],
+                        items[0], items[1], items[2], items[3], items[4], items[5], items[6],
+                        f["spell1"], f["spell2"], f["rune_primary"], f["rune_sub"], f["lp_change"]
+                    ))
 
                 conn.commit()
 
-                results.append({
-                    "match_id": match_id,
-                    "champion": champion,
-                    "win": win,
-                    "kills": kills,
-                    "deaths": deaths,
-                    "assists": assists,
-                    "cs": cs,
-                    "kp": kp,
-                    "duration_min": duration_min,
-                    "queue": QUEUE_IDS.get(queue_id, "Otro"),
-                    "queue_id": queue_id,
-                    "game_creation": game_creation,
-                    "items": items,
-                    "spell1": spell1,
-                    "spell2": spell2,
-                    "rune_primary": perk_primary,
-                    "rune_sub": perk_sub_style,
-                    "lp_change": lp_change,
-                })
-
-            except Exception as e:
-                print(f"match detail fetch error {match_id}: {e}")
-                continue
+        results.extend(new_rows)
 
     results.sort(key=lambda x: x['game_creation'], reverse=True)
 
@@ -809,6 +917,13 @@ def fetch_data_from_riot(player_obj):
             if r.status_code == 200:
                 leagues = r.json()
 
+            elif r.status_code in (401, 403):
+                # FIX: antes esto caía en el mismo log genérico que
+                # cualquier otro error. Una key vencida/inválida hace que
+                # TODO el leaderboard se vea "UNRANKED" sin ninguna pista
+                # visible de qué pasó. Lo marcamos fuerte en el log.
+                print(f"[leagues] ⚠️  API KEY INVÁLIDA O VENCIDA (status {r.status_code}) para {display_name}")
+
             else:
                 print(f"[leagues] {display_name} -> {r.status_code}")
 
@@ -836,7 +951,7 @@ def fetch_data_from_riot(player_obj):
             },
             "opgg_url": (
                 manual_url
-                or f"https://www.op.gg/summoners/{region}/{display_name}-{tag_line}"
+                or f"https://www.op.gg/summoners/{OPGG_REGION_SLUGS.get(region, region)}/{display_name}-{tag_line}"
             ),
             "emblem_url": "/static/img/ranks/unranked.png",
             "hot_streak": False
@@ -887,7 +1002,13 @@ def fetch_data_from_riot(player_obj):
                 stats['rank'],
                 stats['lp']
             )
-            stats['lp_gain_24h'] = get_lp_change(puuid, current_sort_value, hours=24)
+            stats['lp_gain_24h'] = get_lp_change(
+                puuid,
+                current_sort_value,
+                stats['tier'],
+                stats['lp'],
+                hours=24
+            )
         else:
             stats['lp_gain_24h'] = None
 
@@ -922,9 +1043,19 @@ def refresh_leaderboard_now():
         reverse=True
     )
 
+    # FIX (rendimiento): calculamos un etag simple a partir del contenido.
+    # Así /update_data puede devolver "304 no cambió nada" en vez de
+    # reenviar el JSON completo cuando no hubo cambios reales.
+    fingerprint = json.dumps(
+        [(p['puuid'], p['sort_value'], p['game_status']['is_playing']) for p in leaderboard],
+        sort_keys=True
+    )
+    etag = hashlib.md5(fingerprint.encode()).hexdigest()
+
     with _leaderboard_lock:
         LEADERBOARD_CACHE["timestamp"] = time.time()
         LEADERBOARD_CACHE["data"] = leaderboard
+        LEADERBOARD_CACHE["etag"] = etag
 
     return leaderboard
 
@@ -933,6 +1064,12 @@ def get_leaderboard_data():
 
     with _leaderboard_lock:
         return list(LEADERBOARD_CACHE["data"])
+
+
+def get_leaderboard_etag():
+
+    with _leaderboard_lock:
+        return LEADERBOARD_CACHE["etag"]
 
 
 def get_available_regions():
@@ -975,11 +1112,21 @@ def get_cutoffs_for_region(region):
             "grandmaster": 200
         }
 
+    # FIX: antes esto hacía REGION_CONFIG.get(region) y usaba config['challenger']
+    # directo. Si la región no estaba en REGION_CONFIG (aunque sí en REGION_NAMES,
+    # que es lo único que se valida en la ruta /cutoffs/<region>), tiraba un
+    # KeyError sin capturar -> 500 feo en vez de una respuesta prolija.
+    config = REGION_CONFIG.get(region)
+
+    if not config:
+        return {
+            "challenger": 500,
+            "grandmaster": 200
+        }
+
     headers = {
         "X-Riot-Token": API_KEY
     }
-
-    config = REGION_CONFIG.get(region)
 
     chall_slots = config['challenger']
     gm_slots = config['grandmaster']
@@ -1132,6 +1279,8 @@ def start_cleanup_scheduler():
                 CUTOFF_LOCK
             )
 
+            _prune_rate_limit_store()
+
             with _match_history_lock:
                 now = time.time()
                 stale = [
@@ -1246,6 +1395,16 @@ def update_data():
 
     _check_rate_limit()
 
+    # FIX (rendimiento): si el cliente ya tiene la última versión (mismo
+    # etag), le devolvemos 304 sin cuerpo en vez de reenviar todo el JSON.
+    # El leaderboard se refresca cada 90s en el server pero el front hace
+    # polling cada 60s, así que la mayoría de esos polls no traen nada nuevo.
+    current_etag = get_leaderboard_etag()
+    client_etag = request.headers.get('If-None-Match', '')
+
+    if current_etag and client_etag == current_etag:
+        return '', 304
+
     data = get_leaderboard_data()
 
     clean_data = []
@@ -1282,7 +1441,12 @@ def update_data():
             "lp_gain_24h": p['lp_gain_24h']
             })
 
-    return jsonify(clean_data)
+    response = jsonify(clean_data)
+
+    if current_etag:
+        response.headers['ETag'] = current_etag
+
+    return response
 
 
 @app.route('/player_detail/<puuid>')
