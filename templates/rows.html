@@ -16,7 +16,12 @@
     {% set is_lazy = pos > 8 %}
 
 <tr class="player-card {{ row_class }}" data-puuid="{{ p.puuid }}" data-pos="{{ pos }}">
-    <td class="pos-cell">{{ pos }}</td>
+    <td class="pos-cell">
+        <button type="button" class="expand-toggle" data-puuid="{{ p.puuid }}" aria-label="Ver detalle">
+            <span class="expand-pos">{{ pos }}</span>
+            <span class="expand-arrow">▾</span>
+        </button>
+    </td>
     <td>
         <div class="player-info">
             <div class="player-img-wrapper">
@@ -79,6 +84,22 @@
     </td>
     <td class="lp-gain {{ gain24_cls }}" data-raw="{{ p.lp_gain_24h if p.lp_gain_24h is not none else '' }}">{{ gain24_text }}</td>
     <td class="lp-gain {{ gain7_cls }}"  data-raw="{{ p.lp_gain_7d  if p.lp_gain_7d  is not none else '' }}">{{ gain7_text }}</td>
+</tr>
+<tr class="expand-row" data-puuid="{{ p.puuid }}" hidden>
+    <td colspan="9">
+        <div class="expand-panel">
+            <div class="expand-tabs">
+                <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                <button type="button" class="expand-tab" data-tab="history">Historial</button>
+            </div>
+            <div class="expand-body" data-tab-content="elo">
+                <div class="elo-chart-wrap"><div class="expand-loading">Cargando...</div></div>
+            </div>
+            <div class="expand-body" data-tab-content="history" hidden>
+                <div class="match-list"><div class="expand-loading">Cargando...</div></div>
+            </div>
+        </div>
+    </td>
 </tr>
 {% else %}
 <tr><td colspan="9" style="text-align:center;padding:40px;color:#475569;">Cargando...</td></tr>

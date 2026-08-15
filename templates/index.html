@@ -7,8 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/star.png') }}">
-    <link rel="preload" href="{{ url_for('static', filename='css/style.css') }}?v=3.3" as="style">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=3.3">
+    <link rel="preload" href="{{ url_for('static', filename='css/style.css') }}?v=3.4" as="style">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=3.4">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
     <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"></noscript>
 </head>
@@ -142,6 +142,18 @@
                         <span class="mc-detail-label">7 días</span>
                         <span class="mc-detail-value {{ g7_cls }}">{{ g7_text }}</span>
                     </div>
+
+                    <div class="expand-tabs">
+                        <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                        <button type="button" class="expand-tab" data-tab="history">Historial</button>
+                    </div>
+                    <div class="expand-body" data-tab-content="elo">
+                        <div class="elo-chart-wrap"><div class="expand-loading">Cargando...</div></div>
+                    </div>
+                    <div class="expand-body" data-tab-content="history" hidden>
+                        <div class="match-list"><div class="expand-loading">Cargando...</div></div>
+                    </div>
+
                     <a href="{{ p.opgg_url }}" target="_blank" class="mc-opgg-link">↗ Ver en op.gg</a>
                 </div>
             </details>
@@ -154,6 +166,6 @@
         window.REGION_NAMES   = {{ region_names | tojson }};
         window.INTERNAL_TOKEN = "{{ internal_token }}";
     </script>
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=3.3" defer></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=3.4" defer></script>
 </body>
 </html>

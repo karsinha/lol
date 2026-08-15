@@ -45,14 +45,17 @@ INTERNAL_TOKEN = (
 CACHE_TIMEOUT = 60
 GAME_STATUS_CACHE_TIMEOUT = 60
 CUTOFF_CACHE_TIMEOUT = 300
-LEADERBOARD_CACHE_TIMEOUT = 30
+
+
+LEADERBOARD_REFRESH_INTERVAL = 90
+
+MATCH_HISTORY_CACHE_TIMEOUT = 600  
 
 
 EXECUTOR = ThreadPoolExecutor(max_workers=10)
 
 RIOT_SEMAPHORE = Semaphore(5)
 
-CACHE_LOCK = Lock()
 GAME_STATUS_LOCK = Lock()
 CUTOFF_LOCK = Lock()
 
@@ -60,8 +63,10 @@ _players_cache_lock = Lock()
 
 _rate_limit_lock = Lock()
 
+_leaderboard_lock = Lock()
 
-CACHE_DATA = {}
+_match_history_lock = Lock()
+
 
 GAME_STATUS_CACHE = {}
 
@@ -71,6 +76,8 @@ LEADERBOARD_CACHE = {
     "timestamp": 0,
     "data": []
 }
+
+MATCH_HISTORY_CACHE = {}
 
 _players_cache = {
     "data": [],
@@ -172,6 +179,14 @@ REGION_CONFIG = {
     'vn2':  {'challenger': 50,  'grandmaster': 100}
 }
 
+MATCH_ROUTING = {
+    'na1': 'americas', 'br1': 'americas', 'la1': 'americas',
+    'la2': 'americas', 'oc1': 'americas',
+    'euw1': 'europe', 'eun1': 'europe', 'tr1': 'europe', 'ru': 'europe',
+    'kr': 'asia', 'jp1': 'asia',
+    'ph2': 'sea', 'sg2': 'sea', 'th2': 'sea', 'tw2': 'sea', 'vn2': 'sea'
+}
+
 
 def get_db():
     return sqlite3.connect(db_path, timeout=10)
@@ -241,6 +256,7 @@ def _check_rate_limit():
 
 
 def init_db():
+    
     try:
         with get_db() as conn:
 
@@ -249,20 +265,41 @@ def init_db():
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS lp_history (
-                    puuid TEXT,
+                    puuid TEXT NOT NULL,
+                    sort_value INTEGER NOT NULL,
+                    tier TEXT,
+                    rank TEXT,
                     lp INTEGER,
-                    timestamp TEXT
+                    timestamp TEXT NOT NULL
                 )
             """)
 
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_puuid_timestamp
+                CREATE INDEX IF NOT EXISTS idx_lp_puuid_ts
                 ON lp_history(puuid, timestamp DESC)
             """)
 
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_puuid_lp
-                ON lp_history(puuid, lp)
+                CREATE TABLE IF NOT EXISTS match_cache (
+                    puuid TEXT NOT NULL,
+                    match_id TEXT NOT NULL,
+                    champion TEXT,
+                    win INTEGER,
+                    kills INTEGER,
+                    deaths INTEGER,
+                    assists INTEGER,
+                    cs INTEGER,
+                    kill_participation INTEGER,
+                    duration_min INTEGER,
+                    queue_id INTEGER,
+                    game_creation INTEGER,
+                    PRIMARY KEY (puuid, match_id)
+                )
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_match_puuid_creation
+                ON match_cache(puuid, game_creation DESC)
             """)
 
     except Exception as e:
@@ -295,7 +332,7 @@ def load_players_from_json():
         return []
 
 
-def save_lp_snapshot(puuid, current_absolute_lp):
+def save_lp_snapshot(puuid, sort_value, tier, rank, lp):
 
     try:
         now = datetime.datetime.now()
@@ -307,7 +344,7 @@ def save_lp_snapshot(puuid, current_absolute_lp):
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT timestamp, lp
+                SELECT timestamp, sort_value
                 FROM lp_history
                 WHERE puuid = ?
                 ORDER BY timestamp DESC
@@ -330,17 +367,20 @@ def save_lp_snapshot(puuid, current_absolute_lp):
                     now - last_date
                 ).total_seconds()
 
-                if diff_seconds < 1800 and last_val == current_absolute_lp:
+                if diff_seconds < 1800 and last_val == sort_value:
                     should_save = False
 
             if should_save:
 
                 cursor.execute("""
-                    INSERT INTO lp_history (puuid, lp, timestamp)
-                    VALUES (?, ?, ?)
+                    INSERT INTO lp_history (puuid, sort_value, tier, rank, lp, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """, (
                     puuid,
-                    current_absolute_lp,
+                    sort_value,
+                    tier,
+                    rank,
+                    lp,
                     now_str
                 ))
 
@@ -363,7 +403,7 @@ def save_lp_snapshot(puuid, current_absolute_lp):
         print(f"save_lp_snapshot error: {e}")
 
 
-def get_lp_change(puuid, current_absolute_lp, hours=24):
+def get_lp_change(puuid, current_sort_value, hours=24):
 
     try:
         with get_db() as conn:
@@ -380,7 +420,7 @@ def get_lp_change(puuid, current_absolute_lp, hours=24):
             )
 
             cursor.execute("""
-                SELECT lp
+                SELECT sort_value
                 FROM lp_history
                 WHERE puuid = ?
                 AND timestamp <= ?
@@ -394,13 +434,197 @@ def get_lp_change(puuid, current_absolute_lp, hours=24):
             row = cursor.fetchone()
 
             if row:
-                return current_absolute_lp - row[0]
+                return current_sort_value - row[0]
 
             return None
 
     except Exception as e:
         print(f"get_lp_change error: {e}")
         return None
+
+
+def get_elo_history(puuid, days=21, max_points=150):
+
+    try:
+        with get_db() as conn:
+
+            cursor = conn.cursor()
+
+            limit_time = (
+                datetime.datetime.now()
+                - datetime.timedelta(days=days)
+            )
+
+            limit_str = limit_time.strftime("%Y-%m-%d %H:%M:%S")
+
+            cursor.execute("""
+                SELECT sort_value, tier, rank, lp, timestamp
+                FROM lp_history
+                WHERE puuid = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+            """, (puuid, limit_str))
+
+            rows = cursor.fetchall()
+
+        points = [
+            {"v": r[0], "tier": r[1], "rank": r[2], "lp": r[3], "t": r[4]}
+            for r in rows
+        ]
+
+        n = len(points)
+
+        if n <= max_points:
+            return points
+
+        step = n / max_points
+
+        return [points[int(i * step)] for i in range(max_points)]
+
+    except Exception as e:
+        print(f"get_elo_history error: {e}")
+        return []
+
+
+def fetch_match_history(puuid, region, count=7):
+
+    if not API_KEY:
+        return []
+
+    continent = MATCH_ROUTING.get(region, 'americas')
+    headers = {"X-Riot-Token": API_KEY}
+
+    try:
+        r = riot_get(
+            f"https://{continent}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count={count}",
+            headers,
+            timeout=4
+        )
+
+        if r.status_code != 200:
+            print(f"[match ids] {puuid} -> {r.status_code}")
+            return []
+
+        match_ids = r.json()
+
+    except Exception as e:
+        print(f"match ids fetch error {puuid}: {e}")
+        return []
+
+    results = []
+
+    with get_db() as conn:
+
+        cursor = conn.cursor()
+
+        for match_id in match_ids:
+
+            cursor.execute("""
+                SELECT champion, win, kills, deaths, assists, cs,
+                       kill_participation, duration_min, queue_id, game_creation
+                FROM match_cache
+                WHERE puuid = ? AND match_id = ?
+            """, (puuid, match_id))
+
+            cached = cursor.fetchone()
+
+            if cached:
+                results.append({
+                    "match_id": match_id,
+                    "champion": cached[0],
+                    "win": bool(cached[1]),
+                    "kills": cached[2],
+                    "deaths": cached[3],
+                    "assists": cached[4],
+                    "cs": cached[5],
+                    "kp": cached[6],
+                    "duration_min": cached[7],
+                    "queue": QUEUE_IDS.get(cached[8], "Otro"),
+                    "game_creation": cached[9]
+                })
+                continue
+
+            try:
+                mr = riot_get(
+                    f"https://{continent}.api.riotgames.com/lol/match/v5/matches/{match_id}",
+                    headers,
+                    timeout=4
+                )
+
+                if mr.status_code != 200:
+                    print(f"[match detail] {match_id} -> {mr.status_code}")
+                    continue
+
+                match_data = mr.json()
+                info = match_data.get('info', {})
+                participants = info.get('participants', [])
+
+                me = next(
+                    (p for p in participants if p.get('puuid') == puuid),
+                    None
+                )
+
+                if not me:
+                    continue
+
+                team_id = me.get('teamId')
+
+                team_kills = sum(
+                    p.get('kills', 0)
+                    for p in participants
+                    if p.get('teamId') == team_id
+                ) or 1
+
+                kp = int(
+                    ((me.get('kills', 0) + me.get('assists', 0)) / team_kills) * 100
+                )
+
+                cs = (
+                    me.get('totalMinionsKilled', 0)
+                    + me.get('neutralMinionsKilled', 0)
+                )
+
+                duration_min = int(info.get('gameDuration', 0) / 60)
+                queue_id = info.get('queueId')
+                game_creation = info.get('gameCreation', 0)
+                champion = me.get('championName', '?')
+                win = bool(me.get('win', False))
+                kills = me.get('kills', 0)
+                deaths = me.get('deaths', 0)
+                assists = me.get('assists', 0)
+
+                cursor.execute("""
+                    INSERT OR REPLACE INTO match_cache
+                    (puuid, match_id, champion, win, kills, deaths, assists,
+                     cs, kill_participation, duration_min, queue_id, game_creation)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    puuid, match_id, champion, int(win), kills, deaths, assists,
+                    cs, kp, duration_min, queue_id, game_creation
+                ))
+
+                conn.commit()
+
+                results.append({
+                    "match_id": match_id,
+                    "champion": champion,
+                    "win": win,
+                    "kills": kills,
+                    "deaths": deaths,
+                    "assists": assists,
+                    "cs": cs,
+                    "kp": kp,
+                    "duration_min": duration_min,
+                    "queue": QUEUE_IDS.get(queue_id, "Otro"),
+                    "game_creation": game_creation
+                })
+
+            except Exception as e:
+                print(f"match detail fetch error {match_id}: {e}")
+                continue
+
+    results.sort(key=lambda x: x['game_creation'], reverse=True)
+
+    return results
 
 
 def riot_get(url, headers, timeout=3):
@@ -578,12 +802,18 @@ def fetch_data_from_riot(player_obj):
         stats['sort_value'] = current_sort_value
 
         if stats['tier'] != 'UNRANKED':
-            save_lp_snapshot(puuid, current_sort_value)
+            save_lp_snapshot(
+                puuid,
+                current_sort_value,
+                stats['tier'],
+                stats['rank'],
+                stats['lp']
+            )
             stats['lp_gain_24h'] = get_lp_change(puuid, current_sort_value, hours=24)
             stats['lp_gain_7d']  = get_lp_change(puuid, current_sort_value, hours=168)
         else:
             stats['lp_gain_24h'] = None
-            stats['lp_gain_7d']  = None
+            stats['lp_gain_7d'] = None
 
         stats['game_status'] = get_cached_game_status(
             puuid,
@@ -598,68 +828,35 @@ def fetch_data_from_riot(player_obj):
         return None
 
 
-def get_player_data(player):
-
-    now = time.time()
-
-    with CACHE_LOCK:
-
-        if player['puuid'] in CACHE_DATA:
-
-            cache_entry = CACHE_DATA[player['puuid']]
-
-            if (
-                now - cache_entry['timestamp']
-            ) < CACHE_TIMEOUT:
-
-                return cache_entry['data']
-
-    data = fetch_data_from_riot(player)
-
-    if data:
-
-        with CACHE_LOCK:
-            CACHE_DATA[player['puuid']] = {
-                'timestamp': now,
-                'data': data
-            }
-
-    return data
-
-
-def get_leaderboard_data():
-
-    now = time.time()
-
-    if (
-        now - LEADERBOARD_CACHE["timestamp"]
-    ) < LEADERBOARD_CACHE_TIMEOUT:
-
-        return LEADERBOARD_CACHE["data"]
+def refresh_leaderboard_now():
 
     players_list = load_players_from_json()
 
     results = list(
         EXECUTOR.map(
-            get_player_data,
+            fetch_data_from_riot,
             players_list
         )
     )
 
-    leaderboard = [
-        x for x in results
-        if x
-    ]
+    leaderboard = [x for x in results if x]
 
     leaderboard.sort(
         key=lambda x: x['sort_value'],
         reverse=True
     )
 
-    LEADERBOARD_CACHE["timestamp"] = now
-    LEADERBOARD_CACHE["data"] = leaderboard
+    with _leaderboard_lock:
+        LEADERBOARD_CACHE["timestamp"] = time.time()
+        LEADERBOARD_CACHE["data"] = leaderboard
 
     return leaderboard
+
+
+def get_leaderboard_data():
+
+    with _leaderboard_lock:
+        return list(LEADERBOARD_CACHE["data"])
 
 
 def get_available_regions():
@@ -848,12 +1045,6 @@ def start_cleanup_scheduler():
             cleanup_old_lp_data()
 
             cleanup_cache(
-                CACHE_DATA,
-                CACHE_TIMEOUT * 5,
-                CACHE_LOCK
-            )
-
-            cleanup_cache(
                 GAME_STATUS_CACHE,
                 GAME_STATUS_CACHE_TIMEOUT * 5,
                 GAME_STATUS_LOCK
@@ -865,6 +1056,15 @@ def start_cleanup_scheduler():
                 CUTOFF_LOCK
             )
 
+            with _match_history_lock:
+                now = time.time()
+                stale = [
+                    k for k, v in MATCH_HISTORY_CACHE.items()
+                    if now - v['timestamp'] > MATCH_HISTORY_CACHE_TIMEOUT * 5
+                ]
+                for k in stale:
+                    del MATCH_HISTORY_CACHE[k]
+
             time.sleep(86400)
 
     thread = Thread(
@@ -874,6 +1074,29 @@ def start_cleanup_scheduler():
 
     thread.start()
 
+
+def start_leaderboard_refresher():
+    """Refresca el leaderboard cada LEADERBOARD_REFRESH_INTERVAL segundos,
+    siempre en background. home() y /update_data sólo leen el cache."""
+
+    def run_refresh_loop():
+
+        while True:
+
+            try:
+                refresh_leaderboard_now()
+
+            except Exception as e:
+                print(f"leaderboard refresh error: {e}")
+
+            time.sleep(LEADERBOARD_REFRESH_INTERVAL)
+
+    thread = Thread(
+        target=run_refresh_loop,
+        daemon=True
+    )
+
+    thread.start()
 
 
 @app.route('/')
@@ -971,6 +1194,53 @@ def update_data():
     return jsonify(clean_data)
 
 
+@app.route('/player_detail/<puuid>')
+def player_detail(puuid):
+    """Panel expandible: evolución de elo (siempre, de la DB local) +
+    últimas 7 partidas (Match-V5, cacheadas en DB y en memoria por 10 min)."""
+
+    _check_token()
+
+    _check_rate_limit()
+
+    players_list = load_players_from_json()
+
+    player_obj = next(
+        (p for p in players_list if p.get('puuid') == puuid),
+        None
+    )
+
+    if not player_obj:
+        return jsonify({"error": "unknown puuid"}), 404
+
+    region = player_obj.get('region', 'euw1')
+
+    now = time.time()
+
+    with _match_history_lock:
+        cached = MATCH_HISTORY_CACHE.get(puuid)
+        if cached and (now - cached['timestamp']) < MATCH_HISTORY_CACHE_TIMEOUT:
+            matches = cached['data']
+        else:
+            matches = None
+
+    if matches is None:
+        matches = fetch_match_history(puuid, region, count=7)
+
+        with _match_history_lock:
+            MATCH_HISTORY_CACHE[puuid] = {
+                'timestamp': now,
+                'data': matches
+            }
+
+    elo_history = get_elo_history(puuid)
+
+    return jsonify({
+        "matches": matches,
+        "elo_history": elo_history
+    })
+
+
 @app.route('/cutoffs/<region>')
 def get_cutoffs(region):
 
@@ -1002,6 +1272,7 @@ def add_headers(response):
     elif (
         request.path == '/update_data'
         or request.path.startswith('/cutoffs/')
+        or request.path.startswith('/player_detail/')
     ):
 
         response.headers['Cache-Control'] = (
@@ -1067,6 +1338,10 @@ def compress_response(response):
 init_db()
 
 start_cleanup_scheduler()
+
+refresh_leaderboard_now()
+
+start_leaderboard_refresher()
 
 
 if __name__ == '__main__':

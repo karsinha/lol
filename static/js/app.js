@@ -13,6 +13,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const INTERNAL_TOKEN = window.INTERNAL_TOKEN || '';
     const REGION_NAMES   = window.REGION_NAMES   || {};
 
+    const detailCache = new Map();
+    const DETAIL_CACHE_TTL = 5 * 60 * 1000;
+
+    const openDesktop = new Set();
+
     function apiFetch(url, signal) {
         const opts = { headers: { 'X-Internal-Token': INTERNAL_TOKEN } };
         if (signal) opts.signal = signal;
@@ -20,7 +25,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     document.querySelectorAll('#leaderboard-body tr[data-puuid]').forEach(row => {
-        previousPlayers.set(row.dataset.puuid, extractPlayerData(row));
+        if (row.classList.contains('player-card')) {
+            previousPlayers.set(row.dataset.puuid, extractPlayerData(row));
+        }
     });
 
     createUpdateIndicator();
@@ -88,6 +95,147 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
+
+    function loadPlayerDetail(puuid) {
+        const cached = detailCache.get(puuid);
+        if (cached && (Date.now() - cached.ts) < DETAIL_CACHE_TTL) {
+            return Promise.resolve(cached.data);
+        }
+        return apiFetch(`/player_detail/${puuid}`)
+            .then(r => { if (!r.ok) throw new Error('detail ' + r.status); return r.json(); })
+            .then(data => {
+                detailCache.set(puuid, { data, ts: Date.now() });
+                return data;
+            });
+    }
+
+    function renderEloChart(container, history) {
+        if (!container) return;
+        if (!history || history.length < 2) {
+            container.innerHTML = '<div class="expand-empty">Todavía no hay suficientes datos para graficar.</div>';
+            return;
+        }
+
+        const w = 600, h = 120, pad = 6;
+        const values = history.map(p => p.v);
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = (max - min) || 1;
+
+        const points = history.map((p, i) => {
+            const x = pad + (i / (history.length - 1)) * (w - pad * 2);
+            const y = h - pad - ((p.v - min) / range) * (h - pad * 2);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(' ');
+
+        const delta = history[history.length - 1].v - history[0].v;
+        const deltaCls  = delta > 0 ? 'positive' : delta < 0 ? 'negative' : '';
+        const deltaText = `${delta > 0 ? '+' : ''}${delta} LP`;
+
+        container.innerHTML = `
+            <div class="elo-chart-header">
+                <span>Evolución reciente</span>
+                <span class="elo-chart-delta ${deltaCls}">${deltaText}</span>
+            </div>
+            <svg viewBox="0 0 ${w} ${h}" class="elo-chart-svg" preserveAspectRatio="none">
+                <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+            </svg>
+        `;
+    }
+
+    function renderMatchList(container, matches) {
+        if (!container) return;
+        if (!matches || matches.length === 0) {
+            container.innerHTML = '<div class="expand-empty">No se encontraron partidas recientes.</div>';
+            return;
+        }
+
+        container.innerHTML = matches.map(m => `
+            <div class="match-row ${m.win ? 'win' : 'loss'}">
+                <span class="match-result">${m.win ? 'Victoria' : 'Derrota'}</span>
+                <span class="match-champ">${m.champion}</span>
+                <span class="match-kda">${m.kills}/${m.deaths}/${m.assists}</span>
+                <span class="match-kp">${m.kp}% KP</span>
+                <span class="match-cs">${m.cs} CS</span>
+                <span class="match-duration">${m.duration_min}m</span>
+            </div>
+        `).join('');
+    }
+
+    function wireTabs(panel) {
+        panel.querySelectorAll('.expand-tab').forEach(tabBtn => {
+            tabBtn.onclick = () => {
+                panel.querySelectorAll('.expand-tab').forEach(b => b.classList.remove('active'));
+                tabBtn.classList.add('active');
+                panel.querySelectorAll('.expand-body').forEach(b => b.hidden = true);
+                const target = panel.querySelector(`[data-tab-content="${tabBtn.dataset.tab}"]`);
+                if (target) target.hidden = false;
+            };
+        });
+    }
+
+    function hydratePanel(panel, puuid, showLoading) {
+        const eloBody  = panel.querySelector('[data-tab-content="elo"] .elo-chart-wrap');
+        const histBody = panel.querySelector('[data-tab-content="history"] .match-list');
+
+        if (showLoading) {
+            if (eloBody)  eloBody.innerHTML  = '<div class="expand-loading">Cargando...</div>';
+            if (histBody) histBody.innerHTML = '<div class="expand-loading">Cargando...</div>';
+        }
+
+        loadPlayerDetail(puuid).then(data => {
+            renderEloChart(eloBody, data.elo_history);
+            renderMatchList(histBody, data.matches);
+        }).catch(() => {
+            if (eloBody)  eloBody.innerHTML  = '<div class="expand-empty">Error cargando datos.</div>';
+            if (histBody) histBody.innerHTML = '<div class="expand-empty">Error cargando datos.</div>';
+        });
+    }
+
+
+
+    document.getElementById('leaderboard-body')?.addEventListener('click', e => {
+        const btn = e.target.closest('.expand-toggle');
+        if (!btn) return;
+
+        const puuid = btn.dataset.puuid;
+        const expandRow = document.querySelector(`tr.expand-row[data-puuid="${puuid}"]`);
+        if (!expandRow) return;
+
+        const isOpen = !expandRow.hidden;
+
+        if (isOpen) {
+            expandRow.hidden = true;
+            btn.classList.remove('open');
+            openDesktop.delete(puuid);
+            return;
+        }
+
+        expandRow.hidden = false;
+        btn.classList.add('open');
+        openDesktop.add(puuid);
+
+        const panel = expandRow.querySelector('.expand-panel');
+        wireTabs(panel);
+        hydratePanel(panel, puuid, true);
+    });
+
+
+
+    document.getElementById('mobile-list')?.addEventListener('toggle', e => {
+        const card = e.target;
+        if (!card.classList || !card.classList.contains('mobile-card')) return;
+        if (!card.open) return;
+
+        const puuid = card.dataset.puuid;
+        const panel = card.querySelector('.mc-detail');
+        if (!panel) return;
+
+        wireTabs(panel);
+        hydratePanel(panel, puuid, true);
+    }, true);
+
+
     function extractPlayerData(row) {
         const gains = row.querySelectorAll('td.lp-gain');
         return {
@@ -130,8 +278,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (row.dataset.pos !== String(pos)) {
             row.dataset.pos = pos;
             row.className = `player-card ${rowClass}`.trim();
-            const posCell = row.querySelector('.pos-cell');
-            if (posCell) posCell.textContent = pos;
+            const posText = row.querySelector('.expand-pos');
+            if (posText) posText.textContent = pos;
         }
 
         if (!hasChanged(old, buildComparable(player))) return;
@@ -216,7 +364,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     function createRowHTML(player, pos, total) {
-        const rowClass   = pos <= 4 ? 'top-zone' : pos > total - 4 ? 'danger-zone' : '';
         const wrClass    = player.winrate > 50 ? 'wr-green' : player.winrate < 50 ? 'wr-red' : 'wr-gray';
         const g24        = formatGain(player.lp_gain_24h);
         const g7         = formatGain(player.lp_gain_7d);
@@ -227,7 +374,12 @@ document.addEventListener("DOMContentLoaded", () => {
             : `<span class="offline-text">Offline</span>`;
 
         return `
-            <td class="pos-cell">${pos}</td>
+            <td class="pos-cell">
+                <button type="button" class="expand-toggle" data-puuid="${player.puuid}" aria-label="Ver detalle">
+                    <span class="expand-pos">${pos}</span>
+                    <span class="expand-arrow">▾</span>
+                </button>
+            </td>
             <td>
                 <div class="player-info">
                     <div class="player-img-wrapper">
@@ -271,9 +423,29 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
     }
 
+    function createExpandRowHTML(puuid) {
+        return `
+            <td colspan="9">
+                <div class="expand-panel">
+                    <div class="expand-tabs">
+                        <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                        <button type="button" class="expand-tab" data-tab="history">Historial</button>
+                    </div>
+                    <div class="expand-body" data-tab-content="elo">
+                        <div class="elo-chart-wrap"><div class="expand-loading">Cargando...</div></div>
+                    </div>
+                    <div class="expand-body" data-tab-content="history" hidden>
+                        <div class="match-list"><div class="expand-loading">Cargando...</div></div>
+                    </div>
+                </div>
+            </td>
+        `;
+    }
 
-    function reorderRows(tbody, orderedRows) {
-        orderedRows.forEach((row, i) => {
+
+    function reorderRows(tbody, orderedPairs) {
+        const flat = orderedPairs.flat();
+        flat.forEach((row, i) => {
             if (tbody.children[i] !== row) tbody.insertBefore(row, tbody.children[i] || null);
         });
     }
@@ -300,14 +472,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 for (const puuid of previousPlayers.keys()) {
                     if (!newMap.has(puuid)) {
-                        tbody.querySelector(`tr[data-puuid="${puuid}"]`)?.remove();
+                        tbody.querySelector(`tr.player-card[data-puuid="${puuid}"]`)?.remove();
+                        tbody.querySelector(`tr.expand-row[data-puuid="${puuid}"]`)?.remove();
+                        openDesktop.delete(puuid);
                     }
                 }
 
-                const orderedRows = players.map((player, i) => {
+                const orderedPairs = players.map((player, i) => {
                     const pos = i + 1;
                     const old = previousPlayers.get(player.puuid);
-                    let   row = tbody.querySelector(`tr[data-puuid="${player.puuid}"]`);
+                    let   row = tbody.querySelector(`tr.player-card[data-puuid="${player.puuid}"]`);
+                    let   expandRow = tbody.querySelector(`tr.expand-row[data-puuid="${player.puuid}"]`);
 
                     if (!row) {
                         row = document.createElement('tr');
@@ -315,17 +490,31 @@ document.addEventListener("DOMContentLoaded", () => {
                         row.dataset.puuid = player.puuid;
                         row.dataset.pos   = pos;
                         row.innerHTML     = createRowHTML(player, pos, total);
+
+                        expandRow = document.createElement('tr');
+                        expandRow.className     = 'expand-row';
+                        expandRow.dataset.puuid = player.puuid;
+                        expandRow.hidden        = true;
+                        expandRow.innerHTML     = createExpandRowHTML(player.puuid);
                     } else {
                         updateRow(row, player, pos, total, old);
                     }
 
-                    return row;
+                    if (openDesktop.has(player.puuid) && expandRow) {
+                        expandRow.hidden = false;
+                        const toggleBtn = row.querySelector('.expand-toggle');
+                        toggleBtn?.classList.add('open');
+                        const panel = expandRow.querySelector('.expand-panel');
+                        if (panel) {
+                            wireTabs(panel);
+                            hydratePanel(panel, player.puuid, false);
+                        }
+                    }
+
+                    return [row, expandRow];
                 });
 
-                const current = [...tbody.querySelectorAll('tr')];
-                if (orderedRows.some((r, i) => r !== current[i])) {
-                    reorderRows(tbody, orderedRows);
-                }
+                reorderRows(tbody, orderedPairs);
 
                 updateMobileList(players);
                 previousPlayers = newMap;
@@ -414,10 +603,31 @@ document.addEventListener("DOMContentLoaded", () => {
                         <span class="mc-detail-label">7 días</span>
                         <span class="mc-detail-value ${g7.cls}">${g7.text}</span>
                     </div>
+
+                    <div class="expand-tabs">
+                        <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                        <button type="button" class="expand-tab" data-tab="history">Historial</button>
+                    </div>
+                    <div class="expand-body" data-tab-content="elo">
+                        <div class="elo-chart-wrap"><div class="expand-loading">Cargando...</div></div>
+                    </div>
+                    <div class="expand-body" data-tab-content="history" hidden>
+                        <div class="match-list"><div class="expand-loading">Cargando...</div></div>
+                    </div>
+
                     <a href="${p.opgg_url}" target="_blank" class="mc-opgg-link">↗ Ver en op.gg</a>
                 </div>
             </details>`;
         }).join('');
+
+        opened.forEach(puuid => {
+            const card = list.querySelector(`.mobile-card[data-puuid="${puuid}"]`);
+            const panel = card?.querySelector('.mc-detail');
+            if (panel) {
+                wireTabs(panel);
+                hydratePanel(panel, puuid, false);
+            }
+        });
     }
 
 
