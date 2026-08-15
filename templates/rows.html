@@ -9,9 +9,7 @@
     {% endif %}
     {% set wr_class = "wr-green" if p.winrate > 50 else ("wr-red" if p.winrate < 50 else "wr-gray") %}
     {% set gain24_text = ("+" if p.lp_gain_24h and p.lp_gain_24h > 0 else "") ~ (p.lp_gain_24h|string ~ " LP" if p.lp_gain_24h is not none else "—") %}
-    {% set gain7_text  = ("+" if p.lp_gain_7d  and p.lp_gain_7d  > 0 else "") ~ (p.lp_gain_7d|string  ~ " LP" if p.lp_gain_7d  is not none else "—") %}
     {% set gain24_cls  = "positive" if p.lp_gain_24h and p.lp_gain_24h > 0 else ("negative" if p.lp_gain_24h and p.lp_gain_24h < 0 else "") %}
-    {% set gain7_cls   = "positive" if p.lp_gain_7d  and p.lp_gain_7d  > 0 else ("negative" if p.lp_gain_7d  and p.lp_gain_7d  < 0 else "") %}
     {% set friendly_region = region_names.get(p.region|lower, p.region|upper) if region_names is defined else p.region|upper %}
     {% set is_lazy = pos > 8 %}
 
@@ -83,13 +81,12 @@
         {% endif %}
     </td>
     <td class="lp-gain {{ gain24_cls }}" data-raw="{{ p.lp_gain_24h if p.lp_gain_24h is not none else '' }}">{{ gain24_text }}</td>
-    <td class="lp-gain {{ gain7_cls }}"  data-raw="{{ p.lp_gain_7d  if p.lp_gain_7d  is not none else '' }}">{{ gain7_text }}</td>
 </tr>
 <tr class="expand-row" data-puuid="{{ p.puuid }}" hidden>
-    <td colspan="9">
+    <td colspan="8">
         <div class="expand-panel">
             <div class="expand-tabs">
-                <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
                 <button type="button" class="expand-tab" data-tab="history">Historial</button>
             </div>
             <div class="expand-body" data-tab-content="elo">
@@ -102,5 +99,5 @@
     </td>
 </tr>
 {% else %}
-<tr><td colspan="9" style="text-align:center;padding:40px;color:#475569;">Cargando...</td></tr>
+<tr><td colspan="8" style="text-align:center;padding:40px;color:#475569;">Cargando...</td></tr>
 {% endfor %}

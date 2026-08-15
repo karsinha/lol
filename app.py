@@ -810,10 +810,8 @@ def fetch_data_from_riot(player_obj):
                 stats['lp']
             )
             stats['lp_gain_24h'] = get_lp_change(puuid, current_sort_value, hours=24)
-            stats['lp_gain_7d']  = get_lp_change(puuid, current_sort_value, hours=168)
         else:
             stats['lp_gain_24h'] = None
-            stats['lp_gain_7d'] = None
 
         stats['game_status'] = get_cached_game_status(
             puuid,
@@ -1187,9 +1185,8 @@ def update_data():
                 if p['game_status']['is_playing']
                 else ''
             ),
-            "lp_gain_24h": p['lp_gain_24h'],
-            "lp_gain_7d": p['lp_gain_7d']
-        })
+            "lp_gain_24h": p['lp_gain_24h']
+            })
 
     return jsonify(clean_data)
 

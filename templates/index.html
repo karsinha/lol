@@ -7,8 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/star.png') }}">
-    <link rel="preload" href="{{ url_for('static', filename='css/style.css') }}?v=3.4" as="style">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=3.4">
+    <link rel="preload" href="{{ url_for('static', filename='css/style.css') }}?v=3.5" as="style">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=3.5">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
     <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"></noscript>
 </head>
@@ -16,7 +16,7 @@
     <div class="container">
         <div class="header">
             <div class="header-logo">
-                <img src="{{ url_for('static', filename='img/cobra.gif') }}" alt="Logo">
+                <img src="{{ url_for('static', filename='img/jew.webp') }}" alt="Logo">
             </div>
 
             <div class="header-title">
@@ -70,7 +70,6 @@
                         <th>Winrate</th>
                         <th>Estado</th>
                         <th>24h</th>
-                        <th>7D</th>
                     </tr>
                 </thead>
                 <tbody id="leaderboard-body">
@@ -86,9 +85,7 @@
             {% set cls = "top-zone" if pos <= 4 else ("danger-zone" if pos > (total - 4) else "") %}
             {% set tier = (p.tier ~ " " ~ p.rank)|trim %}
             {% set g24_text = ("+" if p.lp_gain_24h and p.lp_gain_24h > 0 else "") ~ (p.lp_gain_24h|string ~ " LP" if p.lp_gain_24h is not none else "—") %}
-            {% set g7_text  = ("+" if p.lp_gain_7d  and p.lp_gain_7d  > 0 else "") ~ (p.lp_gain_7d|string  ~ " LP" if p.lp_gain_7d  is not none else "—") %}
             {% set g24_cls = "positive" if p.lp_gain_24h and p.lp_gain_24h > 0 else ("negative" if p.lp_gain_24h and p.lp_gain_24h < 0 else "") %}
-            {% set g7_cls  = "positive" if p.lp_gain_7d  and p.lp_gain_7d  > 0 else ("negative" if p.lp_gain_7d  and p.lp_gain_7d  < 0 else "") %}
             {% set wr_fill = "linear-gradient(90deg,#10b981,#34d399)" if p.winrate > 50 else ("linear-gradient(90deg,#ef4444,#f87171)" if p.winrate < 50 else "#475569") %}
             {% set friendly_region = region_names.get(p.region|lower, p.region|upper) %}
             {% set is_lazy = pos > 8 %}
@@ -138,13 +135,9 @@
                         <span class="mc-detail-label">24h</span>
                         <span class="mc-detail-value {{ g24_cls }}">{{ g24_text }}</span>
                     </div>
-                    <div class="mc-detail-row">
-                        <span class="mc-detail-label">7 días</span>
-                        <span class="mc-detail-value {{ g7_cls }}">{{ g7_text }}</span>
-                    </div>
 
                     <div class="expand-tabs">
-                        <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                        <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
                         <button type="button" class="expand-tab" data-tab="history">Historial</button>
                     </div>
                     <div class="expand-body" data-tab-content="elo">
@@ -166,6 +159,6 @@
         window.REGION_NAMES   = {{ region_names | tojson }};
         window.INTERNAL_TOKEN = "{{ internal_token }}";
     </script>
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=3.4" defer></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=3.5" defer></script>
 </body>
 </html>

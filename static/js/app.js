@@ -109,6 +109,38 @@ document.addEventListener("DOMContentLoaded", () => {
             });
     }
 
+    function formatAxisDate(tStr) {
+        const d = new Date(tStr.replace(' ', 'T'));
+        const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+        return `${d.getDate()} ${months[d.getMonth()]}`;
+    }
+
+    // Elige puntos para el eje de fechas dejando al menos ~3 días de separación
+    // entre etiquetas (más si el rango total es largo), con un máximo de 6 labels.
+    function pickAxisTicks(history) {
+        const n = history.length;
+        if (n <= 1) return [];
+        if (n === 2) return [0, 1];
+
+        const firstT = new Date(history[0].t.replace(' ', 'T')).getTime();
+        const lastT  = new Date(history[n - 1].t.replace(' ', 'T')).getTime();
+        const spanDays = Math.max(1, (lastT - firstT) / 86400000);
+        const maxLabels = 6;
+        const stepMs = Math.max(3, Math.ceil(spanDays / maxLabels)) * 86400000;
+
+        const indices = [0];
+        let lastPicked = firstT;
+        for (let i = 1; i < n; i++) {
+            const t = new Date(history[i].t.replace(' ', 'T')).getTime();
+            if (t - lastPicked >= stepMs) {
+                indices.push(i);
+                lastPicked = t;
+            }
+        }
+        if (indices[indices.length - 1] !== n - 1) indices.push(n - 1);
+        return indices;
+    }
+
     function renderEloChart(container, history) {
         if (!container) return;
         if (!history || history.length < 2) {
@@ -121,9 +153,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const min = Math.min(...values);
         const max = Math.max(...values);
         const range = (max - min) || 1;
+        const lastIndex = history.length - 1;
 
         const points = history.map((p, i) => {
-            const x = pad + (i / (history.length - 1)) * (w - pad * 2);
+            const x = pad + (i / lastIndex) * (w - pad * 2);
             const y = h - pad - ((p.v - min) / range) * (h - pad * 2);
             return `${x.toFixed(1)},${y.toFixed(1)}`;
         }).join(' ');
@@ -131,6 +164,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const delta = history[history.length - 1].v - history[0].v;
         const deltaCls  = delta > 0 ? 'positive' : delta < 0 ? 'negative' : '';
         const deltaText = `${delta > 0 ? '+' : ''}${delta} LP`;
+
+        const axisHTML = pickAxisTicks(history).map(i => {
+            const pct   = (i / lastIndex) * 100;
+            const align = i === 0 ? 'left' : i === lastIndex ? 'right' : 'center';
+            return `<span class="elo-axis-tick" data-align="${align}" style="left:${pct.toFixed(2)}%;">${formatAxisDate(history[i].t)}</span>`;
+        }).join('');
 
         container.innerHTML = `
             <div class="elo-chart-header">
@@ -140,7 +179,27 @@ document.addEventListener("DOMContentLoaded", () => {
             <svg viewBox="0 0 ${w} ${h}" class="elo-chart-svg" preserveAspectRatio="none">
                 <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
             </svg>
+            <div class="elo-chart-axis">${axisHTML}</div>
         `;
+    }
+
+    let DDRAGON_VERSION = '14.23.1'; // fallback si no llega a resolver el fetch a tiempo
+    fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(versions => { if (Array.isArray(versions) && versions[0]) DDRAGON_VERSION = versions[0]; })
+        .catch(() => {});
+
+    function champIconUrl(champion) {
+        return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champion}.png`;
+    }
+
+    function timeAgo(epochMs) {
+        if (!epochMs) return '';
+        const diffMin = Math.max(0, Math.round((Date.now() - epochMs) / 60000));
+        if (diffMin < 60) return `hace ${diffMin} min`;
+        const diffH = Math.round(diffMin / 60);
+        if (diffH < 24) return `hace ${diffH} h`;
+        return `hace ${Math.round(diffH / 24)} d`;
     }
 
     function renderMatchList(container, matches) {
@@ -150,16 +209,32 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        container.innerHTML = matches.map(m => `
+        container.innerHTML = matches.map(m => {
+            const kdaRatio = (((m.kills + m.assists) / Math.max(1, m.deaths))).toFixed(1);
+            const hasLp    = m.lp_change !== null && m.lp_change !== undefined;
+            const lpCls    = hasLp ? (m.lp_change > 0 ? 'positive' : m.lp_change < 0 ? 'negative' : '') : '';
+            const lpText   = hasLp ? `${m.lp_change > 0 ? '+' : ''}${m.lp_change} LP` : '—';
+
+            return `
             <div class="match-row ${m.win ? 'win' : 'loss'}">
-                <span class="match-result">${m.win ? 'Victoria' : 'Derrota'}</span>
-                <span class="match-champ">${m.champion}</span>
-                <span class="match-kda">${m.kills}/${m.deaths}/${m.assists}</span>
-                <span class="match-kp">${m.kp}% KP</span>
-                <span class="match-cs">${m.cs} CS</span>
+                <img class="match-champ-icon" src="${champIconUrl(m.champion)}" alt="${m.champion}" title="${m.champion}" loading="lazy">
+                <div class="match-main">
+                    <span class="match-result">${m.win ? 'Victoria' : 'Derrota'}</span>
+                    <span class="match-time-ago">${timeAgo(m.game_creation)}</span>
+                </div>
+                <div class="match-kda-block">
+                    <span class="match-kda">${m.kills}/${m.deaths}/${m.assists}</span>
+                    <span class="match-kda-ratio">${kdaRatio} KDA</span>
+                </div>
+                <div class="match-meta">
+                    <span class="match-kp">${m.kp}% KP</span>
+                    <span class="match-cs">${m.cs} CS</span>
+                </div>
                 <span class="match-duration">${m.duration_min}m</span>
+                <span class="match-lp ${lpCls}">${lpText}</span>
             </div>
-        `).join('');
+        `;
+        }).join('');
     }
 
     function wireTabs(panel) {
@@ -195,10 +270,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     document.getElementById('leaderboard-body')?.addEventListener('click', e => {
-        const btn = e.target.closest('.expand-toggle');
-        if (!btn) return;
+        // Dejar que el link a op.gg navegue normalmente sin togglear la fila
+        if (e.target.closest('a')) return;
+        // Clicks dentro del panel ya desplegado (tabs, match rows, etc.) no deben re-togglear
+        if (e.target.closest('.expand-row')) return;
 
-        const puuid = btn.dataset.puuid;
+        const row = e.target.closest('tr.player-card');
+        if (!row) return;
+
+        const puuid = row.dataset.puuid;
+        const btn = row.querySelector('.expand-toggle');
         const expandRow = document.querySelector(`tr.expand-row[data-puuid="${puuid}"]`);
         if (!expandRow) return;
 
@@ -206,13 +287,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (isOpen) {
             expandRow.hidden = true;
-            btn.classList.remove('open');
+            btn?.classList.remove('open');
             openDesktop.delete(puuid);
             return;
         }
 
         expandRow.hidden = false;
-        btn.classList.add('open');
+        btn?.classList.add('open');
         openDesktop.add(puuid);
 
         const panel = expandRow.querySelector('.expand-panel');
@@ -250,7 +331,6 @@ document.addEventListener("DOMContentLoaded", () => {
             time:        row.querySelector('.game-time')?.textContent?.replace(/[()]/g, '').trim() || '',
             hot_streak:  !!row.querySelector('.hot-streak'),
             lp_gain_24h: gains[0]?.dataset.raw ?? '',
-            lp_gain_7d:  gains[1]?.dataset.raw ?? '',
         };
     }
 
@@ -258,7 +338,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!old) return true;
         return ['tier', 'rank', 'lp', 'wins', 'losses', 'winrate',
                 'is_playing', 'mode', 'time', 'hot_streak',
-                'lp_gain_24h', 'lp_gain_7d']
+                'lp_gain_24h']
             .some(k => old[k] !== neo[k]);
     }
 
@@ -331,16 +411,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const gainTds = row.querySelectorAll('td.lp-gain');
         const g24 = formatGain(player.lp_gain_24h);
-        const g7  = formatGain(player.lp_gain_7d);
         if (gainTds[0]) {
             gainTds[0].textContent = g24.text;
             gainTds[0].className   = `lp-gain ${g24.cls}`.trim();
             gainTds[0].dataset.raw = player.lp_gain_24h ?? '';
-        }
-        if (gainTds[1]) {
-            gainTds[1].textContent = g7.text;
-            gainTds[1].className   = `lp-gain ${g7.cls}`.trim();
-            gainTds[1].dataset.raw = player.lp_gain_7d ?? '';
         }
     }
 
@@ -358,7 +432,6 @@ document.addEventListener("DOMContentLoaded", () => {
             time:        p.time   || '',
             hot_streak:  p.hot_streak,
             lp_gain_24h: String(p.lp_gain_24h ?? ''),
-            lp_gain_7d:  String(p.lp_gain_7d  ?? ''),
         };
     }
 
@@ -366,7 +439,6 @@ document.addEventListener("DOMContentLoaded", () => {
     function createRowHTML(player, pos, total) {
         const wrClass    = player.winrate > 50 ? 'wr-green' : player.winrate < 50 ? 'wr-red' : 'wr-gray';
         const g24        = formatGain(player.lp_gain_24h);
-        const g7         = formatGain(player.lp_gain_7d);
         const friendly   = REGION_NAMES[(player.region || '').toLowerCase()] || player.region;
         const hotHTML    = player.hot_streak ? `<span class="hot-streak" title="Hot streak (+3)">🔥</span>` : '';
         const statusHTML = player.is_playing
@@ -419,16 +491,15 @@ document.addEventListener("DOMContentLoaded", () => {
             </td>
             <td>${statusHTML}</td>
             <td class="lp-gain ${g24.cls}" data-raw="${player.lp_gain_24h ?? ''}">${g24.text}</td>
-            <td class="lp-gain ${g7.cls}"  data-raw="${player.lp_gain_7d  ?? ''}">${g7.text}</td>
         `;
     }
 
     function createExpandRowHTML(puuid) {
         return `
-            <td colspan="9">
+            <td colspan="8">
                 <div class="expand-panel">
                     <div class="expand-tabs">
-                        <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                        <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
                         <button type="button" class="expand-tab" data-tab="history">Historial</button>
                     </div>
                     <div class="expand-body" data-tab-content="elo">
@@ -550,7 +621,6 @@ document.addEventListener("DOMContentLoaded", () => {
             const isOpen     = opened.has(p.puuid) ? 'open' : '';
             const tier       = `${p.tier} ${p.rank}`.trim();
             const g24        = formatGain(p.lp_gain_24h);
-            const g7         = formatGain(p.lp_gain_7d);
             const wrFill     = p.winrate > 50
                 ? 'linear-gradient(90deg,#10b981,#34d399)'
                 : p.winrate < 50
@@ -599,13 +669,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         <span class="mc-detail-label">24h</span>
                         <span class="mc-detail-value ${g24.cls}">${g24.text}</span>
                     </div>
-                    <div class="mc-detail-row">
-                        <span class="mc-detail-label">7 días</span>
-                        <span class="mc-detail-value ${g7.cls}">${g7.text}</span>
-                    </div>
 
                     <div class="expand-tabs">
-                        <button type="button" class="expand-tab active" data-tab="elo">Stats &amp; Elo</button>
+                        <button type="button" class="expand-tab active" data-tab="elo">Gráfico</button>
                         <button type="button" class="expand-tab" data-tab="history">Historial</button>
                     </div>
                     <div class="expand-body" data-tab-content="elo">
