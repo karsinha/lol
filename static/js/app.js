@@ -26,7 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const detailCache = new Map();
     const DETAIL_CACHE_TTL = 5 * 60 * 1000;
 
-    const gameTimerInterval_MS = 15000; // recalcula cada 15s, de sobra para mostrar minutos
+    const gameTimerInterval_MS = 15000; 
     let gameTimerInterval = null;
 
     function formatElapsed(ms) {
@@ -151,8 +151,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${d.getDate()} ${months[d.getMonth()]}`;
     }
 
-    // Elige puntos para el eje de fechas dejando al menos ~3 días de separación
-    // entre etiquetas (más si el rango total es largo), con un máximo de 6 labels.
     function pickAxisTicks(history) {
         const n = history.length;
         if (n <= 1) return [];
@@ -219,19 +217,9 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
     }
 
-    // ------------------------------------------------------------------
-    // DDRAGON: versión del juego + mapa de íconos de runas.
-    //
-    // FIX (rendimiento): antes esto se volvía a pedir a ddragon.leagueoflegends.com
-    // en CADA carga de página, aunque los datos casi nunca cambien (Riot
-    // saca un patch nuevo cada 2 semanas más o menos). Ahora lo guardamos
-    // en localStorage con un TTL de 24hs: si lo que tenemos guardado es
-    // reciente, lo usamos directo sin pedir nada a la red. Si venció (o es
-    // la primera visita), lo pedimos una vez y lo volvemos a guardar.
-    // ------------------------------------------------------------------
 
     const DDRAGON_CACHE_KEY = 'ddragonCache_v1';
-    const DDRAGON_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas
+    const DDRAGON_CACHE_TTL = 24 * 60 * 60 * 1000; 
 
     let DDRAGON_VERSION = '14.23.1';
     let RUNE_ICONS = {};
@@ -252,13 +240,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const parsed = JSON.parse(raw);
             if (!parsed || !parsed.ts || !parsed.version || !parsed.runeIcons) return null;
 
-            if ((Date.now() - parsed.ts) > DDRAGON_CACHE_TTL) return null; // venció
+            if ((Date.now() - parsed.ts) > DDRAGON_CACHE_TTL) return null; 
 
             return parsed;
         } catch {
-            // localStorage puede fallar (modo incógnito con storage lleno, etc.)
-            // o el JSON puede estar corrupto. En cualquier caso, tratamos
-            // como si no hubiera cache y pedimos todo de nuevo.
             return null;
         }
     }
@@ -271,9 +256,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 runeIcons
             }));
         } catch {
-            // Si falla el guardado (cuota llena, incógnito, etc.) no pasa nada
-            // grave: simplemente la próxima carga de página va a volver a
-            // pedir los datos a ddragon. No es un error que haya que mostrar.
         }
     }
 
@@ -294,11 +276,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (cached) {
             DDRAGON_VERSION = cached.version;
             RUNE_ICONS = cached.runeIcons;
-            return; // no se pide nada a la red, cache todavía válido
+            return; 
         }
 
-        // No hay cache (o venció): pedimos versión + runas a ddragon,
-        // igual que antes, y esta vez lo guardamos para la próxima visita.
         fetch('https://ddragon.leagueoflegends.com/api/versions.json')
             .then(r => r.ok ? r.json() : Promise.reject())
             .then(versions => {
@@ -445,9 +425,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     document.getElementById('leaderboard-body')?.addEventListener('click', e => {
-        // Dejar que el link a op.gg navegue normalmente sin togglear la fila
         if (e.target.closest('a')) return;
-        // Clicks dentro del panel ya desplegado (tabs, match rows, etc.) no deben re-togglear
         if (e.target.closest('.expand-row')) return;
 
         const row = e.target.closest('tr.player-card');
@@ -716,7 +694,7 @@ document.addEventListener("DOMContentLoaded", () => {
         apiFetch('/update_data', controller.signal)
             .then(r => {
                 clearTimeout(timeoutId);
-                if (r.status === 304) return null; // sin cambios desde el último poll
+                if (r.status === 304) return null; 
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
             })
@@ -903,7 +881,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
-    const FAST_POLL_INTERVAL = 3000; // mientras no haya datos reales, pollea cada 3s
+    const FAST_POLL_INTERVAL = 3000; 
 
 function scheduleFirstUpdate() {
     const runLoop = () => {
@@ -912,10 +890,6 @@ function scheduleFirstUpdate() {
         if (hasRealData) {
             updateInterval = setInterval(updateLeaderboard, UPDATE_FREQUENCY);
         } else {
-            // Todavía no llegó la primera pasada real del backend
-            // (proceso recién arrancado): reintenta rápido en vez de
-            // esperar los 60s normales, para sacar el "Cargando..." lo
-            // antes posible.
             setTimeout(runLoop, FAST_POLL_INTERVAL);
         }
     };

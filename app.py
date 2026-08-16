@@ -41,9 +41,7 @@ app = Flask(
 
 API_KEY = os.getenv("RIOT_API_KEY")
 
-# FIX: si falta INTERNAL_TOKEN en .env, antes se generaba uno random en
-# cada arranque sin avisar. Ahora falla fuerte y explica qué pasa, para
-# no pasar horas debuggeando 403 random.
+
 INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN")
 
 if not INTERNAL_TOKEN:
@@ -62,15 +60,9 @@ LEADERBOARD_REFRESH_INTERVAL = 90
 
 MATCH_HISTORY_CACHE_TIMEOUT = 600
 
-# FIX (rate limit): antes se disparaban todos los pedidos a Riot de un
-# saque, limitados solo por RIOT_SEMAPHORE (que capea la CONCURRENCIA
-# pero no espacia el RITMO en el tiempo). Con 20 jugadores eso generaba
-# ráfagas de ~40-60 pedidos en 2-3 segundos, pisándole los talones al
-# límite de 20 req/s de Riot. Ahora todo pedido masivo a Riot (leaderboard
-# y detalle de partidas) pasa por _run_in_paced_batches, que manda de a
-# tandas con una pausa entre ellas.
-RIOT_BATCH_SIZE  = 5     # coincide con RIOT_SEMAPHORE, para que cada tanda entre justa
-RIOT_BATCH_DELAY = 1.2   # segundos de pausa entre tandas
+
+RIOT_BATCH_SIZE  = 5     
+RIOT_BATCH_DELAY = 1.2    
 
 
 
@@ -207,8 +199,6 @@ REGION_CONFIG = {
     'vn2':  {'challenger': 50,  'grandmaster': 100}
 }
 
-# FIX: los slugs que usa op.gg en las URLs no son los mismos códigos que
-# usa la API de Riot para las regiones (ej: la2 -> "las", no "la2").
 OPGG_REGION_SLUGS = {
     'na1': 'na', 'euw1': 'euw', 'eun1': 'eune', 'kr': 'kr', 'jp1': 'jp',
     'la1': 'lan', 'la2': 'las', 'br1': 'br', 'oc1': 'oce', 'tr1': 'tr',
@@ -255,15 +245,7 @@ def calculate_sort_score(tier, rank, lp):
 
 
 def _client_ip():
-    """Saca la IP real del cliente.
 
-    IMPORTANTE: si tu app corre detrás de un proxy de confianza (como el
-    de PythonAnywhere), ese proxy AGREGA la IP real al final del header
-    X-Forwarded-For. Un cliente malicioso puede mandar su propio valor de
-    X-Forwarded-For, pero no puede evitar que el proxy le agregue el suyo
-    después. Por eso tomamos el ÚLTIMO valor de la lista, no el primero
-    (el primero es fácilmente falsificable por el cliente).
-    """
     xff = request.headers.get('X-Forwarded-For', '')
 
     if xff:
@@ -296,9 +278,7 @@ def _is_rate_limited(ip: str):
 
 
 def _prune_rate_limit_store():
-    """Borra del dict las IPs que ya no tienen llamados recientes.
-    Sin esto, _rate_limit_store crece para siempre con cada IP nueva
-    que haya pasado alguna vez, aunque haga rato que no vuelve."""
+
     now = time.time()
 
     with _rate_limit_lock:
@@ -334,19 +314,7 @@ def _check_rate_limit():
 
 
 def _run_in_paced_batches(items, fn, batch_size=RIOT_BATCH_SIZE, delay=RIOT_BATCH_DELAY):
-    """Corre fn(item) para cada item, de a tandas en paralelo, con una pausa
-    entre tandas.
-
-    RIOT_SEMAPHORE ya limita cuántos pedidos van EN SIMULTÁNEO, pero eso
-    solo capea la concurrencia -- no evita que, por ejemplo, 20 jugadores
-    disparen ~40 pedidos que terminan de mandarse en 2-3 segundos (ya que
-    el semáforo los deja pasar de a 5 apenas se libera un lugar). Esta
-    función agrega el espaciado en el TIEMPO que faltaba, para no
-    pisarle los talones al rate limit de Riot (20 req/s, 100 req/2min).
-
-    Se usa tanto para el refresh del leaderboard como para el fetch de
-    detalle de partidas cuando alguien abre el panel de un jugador.
-    """
+    
     results = []
     for i in range(0, len(items), batch_size):
         batch = items[i:i + batch_size]
@@ -594,10 +562,7 @@ def get_elo_history(puuid, days=21, max_points=150):
 
 
 def estimate_match_lp_change(puuid, game_creation_ms, duration_min):
-    """Aproxima el LP ganado/perdido en una partida comparando el snapshot
-    de lp_history más cercano antes del inicio con el más cercano después
-    del final. Es una estimación: si hay partidas muy seguidas y snapshots
-    espaciados, puede incluir LP de más de una partida."""
+    
     try:
         start_dt = datetime.datetime.fromtimestamp(game_creation_ms / 1000)
         end_dt = start_dt + datetime.timedelta(minutes=(duration_min or 0) + 2)

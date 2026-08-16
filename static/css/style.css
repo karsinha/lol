@@ -47,7 +47,6 @@ body::before {
     z-index: 0;
 }
 
-/* subtle scrollbar to match the theme */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(124,58,237,0.25); border-radius: 99px; border: 2px solid var(--bg); }
