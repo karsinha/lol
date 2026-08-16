@@ -20,6 +20,9 @@ from dotenv import load_dotenv
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
+data_dir = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", base_dir)
+
+
 template_dir = os.path.join(base_dir, 'templates')
 static_dir   = os.path.join(base_dir, 'static')
 env_path     = os.path.join(base_dir, '.env')

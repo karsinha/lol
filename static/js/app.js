@@ -729,6 +729,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 hasRealData = players.length > 0;   
 
+                if (hasRealData) {
+                    document.getElementById('loading-placeholder-row')?.remove();
+                }
+
 
                 const tbody  = document.getElementById('leaderboard-body');
                 const newMap = new Map(players.map(p => [p.puuid, p]));
