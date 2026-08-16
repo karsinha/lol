@@ -26,10 +26,9 @@ data_dir = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", base_dir)
 template_dir = os.path.join(base_dir, 'templates')
 static_dir   = os.path.join(base_dir, 'static')
 env_path     = os.path.join(base_dir, '.env')
-db_path      = os.path.join(base_dir, 'soloq_history.db')
+db_path      = os.path.join(data_dir, 'soloq_history.db')
 json_path    = os.path.join(base_dir, 'players.json')
-leaderboard_cache_path = os.path.join(base_dir, 'leaderboard_cache.json')
-
+leaderboard_cache_path = os.path.join(data_dir, 'leaderboard_cache.json')
 load_dotenv(env_path)
 
 
